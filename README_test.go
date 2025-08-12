@@ -1,7 +1,6 @@
 package goparatable
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -75,17 +74,17 @@ func TestREADME_Ex1(t *testing.T) {
 		return table
 	}()
 
-	var print = func(table *ParamTable) {
-		fmt.Printf(`
-   X     Y     W     H
-P: %.1f %.1f %.1f %.1f 
-B: %.1f %.1f %.1f %.1f`,
-			table.Get_F32(Px), table.Get_F32(Py), table.Get_F32(Pw), table.Get_F32(Ph),
-			table.Get_F32(Bx), table.Get_F32(By), table.Get_F32(Bw), table.Get_F32(Bh),
-		)
-	}
+	// 	var print = func(table *ParamTable) {
+	// 		fmt.Printf(`
+	//    X     Y     W     H
+	// P: %.1f %.1f %.1f %.1f
+	// B: %.1f %.1f %.1f %.1f`,
+	// 			table.Get_F32(Px), table.Get_F32(Py), table.Get_F32(Pw), table.Get_F32(Ph),
+	// 			table.Get_F32(Bx), table.Get_F32(By), table.Get_F32(Bw), table.Get_F32(Bh),
+	// 		)
+	// 	}
 
-	print(&MyParamTable)
+	// print(&MyParamTable)
 
 	if MyParamTable.Get_F32(Bx) != 132.0 {
 		t.Errorf("example failed: Bx: %f != 132.0", MyParamTable.Get_F32(Bx))
@@ -114,6 +113,5 @@ B: %.1f %.1f %.1f %.1f`,
 		t.Errorf("example failed: Bw: %f != 336.0", MyParamTable.Get_F32(Bh))
 	}
 
-	print(&MyParamTable)
+	// print(&MyParamTable)
 }
-
