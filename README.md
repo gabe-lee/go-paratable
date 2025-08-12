@@ -18,7 +18,9 @@ This package uses minimal special features of golang, relying entirely on base s
 ## Installation
 From within your project directory, use the following command:
 
-```go get github.com/gabe-lee/goparatable@latest```
+```
+go get github.com/gabe-lee/goparatable@latest
+```
 
 Then simply import it wherever it is needed:
 ```golang
@@ -344,4 +346,4 @@ var MyParamTable = InitMyParamTable()
   - [ ] Optional UI Layout system that uses `ParamTable`
   - [ ] Additional reduction of memory footprint?
   - [ ] Non-recursive update algorithm
-  - [ ] Direct support for arrays/pointers?
+  - [ ] ~Direct support for arrays/pointers?~
