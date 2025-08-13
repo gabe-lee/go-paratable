@@ -38,7 +38,7 @@ func TestREADME_Ex1(t *testing.T) {
 			PIdx_U64(0),
 			PIdx_I64(0),
 			PIdx_F64(0),
-			PIdx_Addr(0),
+			PIdx_Ptr(0),
 			PIdx_U32(0),
 			PIdx_I32(0),
 			_F32_PARAMS_END,

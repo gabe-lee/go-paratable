@@ -192,7 +192,7 @@ type (
 	PIdx_U64      = go_param_table.PIdx_U64
 	PIdx_I64      = go_param_table.PIdx_I64
 	PIdx_F64      = go_param_table.PIdx_F64
-	PIdx_Addr     = go_param_table.PIdx_Addr
+	PIdx_Ptr      = go_param_table.PIdx_Ptr
 	PIdx_U32      = go_param_table.PIdx_U32
 	PIdx_I32      = go_param_table.PIdx_I32
 	PIdx_F32      = go_param_table.PIdx_F32
@@ -225,13 +225,13 @@ const (
 )
 
 const (
-	FIRST_ADDR_PARAM PIdx_Addr = PIdx_Addr(iota + _F64_PARAMS_END)
-	// ... more uintptr param indexes
-	_ADDR_PARAMS_END
+	FIRST_PTR_PARAM PIdx_Addr = PIdx_Ptr(iota + _F64_PARAMS_END)
+	// ... more unsafe.Pointer param indexes
+	_PTR_PARAMS_END
 )
 
 const (
-	FIRST_U32_PARAM PIdx_U32 = PIdx_U32(iota + _ADDR_PARAMS_END)
+	FIRST_U32_PARAM PIdx_U32 = PIdx_U32(iota + _PTR_PARAMS_END)
 	// ... more uint32 param indexes
 	_U32_PARAMS_END
 )
@@ -320,7 +320,7 @@ func InitMyParamTable() ParamTable {
 	// table and want more speed
 	go_param_table.EnableDebug = true
 	// Initialize table with type index ends (each parameter except the last (calcsCount) must be >= the previous parameter)
-	table := go_param_table.NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _ADDR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
+	table := go_param_table.NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _PTR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
 	// Register all calculations first
 	table.RegisterCalc(_FIRST_CALC, func(t *CalcInterface) {
 		vala := t.GetInput_U64(_IN_FIRST_CALC_A) // first input
@@ -332,9 +332,9 @@ func InitMyParamTable() ParamTable {
 	table.InitRoot_U64(FIRST_U64_PARAM, 1, false)
 	table.InitRoot_I64(FIRST_I64_PARAM, -2, true)
 	// Init derived values last
-    // Here the user-defined helper function is used,
-    // but you can call `table.InitDerived_XXX()` manually,
-    // or with any other helper code pattern desired
+  // Here the user-defined helper function is used,
+  // but you can call `table.InitDerived_XXX()` manually,
+  // or with any other helper code pattern desired
 	initFirstCalcDerived(&table, false, FIRST_U64_PARAM, FIRST_I64_PARAM, FIRST_I32_PARAM)
 	return table
 }

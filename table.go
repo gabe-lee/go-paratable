@@ -16,7 +16,7 @@ type (
 	PIdx_U64  uint16
 	PIdx_I64  uint16
 	PIdx_F64  uint16
-	PIdx_Addr uint16
+	PIdx_Ptr  uint16
 	PIdx_U32  uint16
 	PIdx_I32  uint16
 	PIdx_F32  uint16
@@ -32,7 +32,7 @@ const (
 	typeU64 = iota
 	typeI64
 	typeF64
-	typeAddr
+	typePtr
 	typeU32
 	typeI32
 	typeF32
@@ -45,18 +45,18 @@ const (
 )
 
 const (
-	size64   uint32 = 8
-	sizeAddr uint32 = uint32(unsafe.Sizeof(uintptr(0)))
-	size32   uint32 = 4
-	size16   uint32 = 2
-	size8    uint32 = 1
+	size64  uint32 = 8
+	sizePtr uint32 = uint32(unsafe.Sizeof(unsafe.Pointer(nil)))
+	size32  uint32 = 4
+	size16  uint32 = 2
+	size8   uint32 = 1
 )
 
 var sizeTable = [typeCount]uint32{
 	typeU64:  size64,
 	typeI64:  size64,
 	typeF64:  size64,
-	typeAddr: sizeAddr,
+	typePtr:  sizePtr,
 	typeU32:  size32,
 	typeI32:  size32,
 	typeF32:  size32,
@@ -127,15 +127,15 @@ type ParamTable struct {
 	idxOffsets  [typeCount]uint16
 }
 
-func NewParamTable(typeU64End PIdx_U64, typeI64End PIdx_I64, typeF64End PIdx_F64, typeAddrEnd PIdx_Addr, typeU32End PIdx_U32, typeI32End PIdx_I32, typeF32End PIdx_F32, typeU16End PIdx_U16, typeI16End PIdx_I16, typeU8End PIdx_U8, typeI8End PIdx_I8, typeBoolEnd PIdx_Bool, calcsCount PIdx_Calc) ParamTable {
-	if typeU64End > PIdx_U64(typeI64End) || typeI64End > PIdx_I64(typeF64End) || typeF64End > PIdx_F64(typeAddrEnd) ||
-		typeAddrEnd > PIdx_Addr(typeU32End) ||
+func NewParamTable(typeU64End PIdx_U64, typeI64End PIdx_I64, typeF64End PIdx_F64, typePtrEnd PIdx_Ptr, typeU32End PIdx_U32, typeI32End PIdx_I32, typeF32End PIdx_F32, typeU16End PIdx_U16, typeI16End PIdx_I16, typeU8End PIdx_U8, typeI8End PIdx_I8, typeBoolEnd PIdx_Bool, calcsCount PIdx_Calc) ParamTable {
+	if typeU64End > PIdx_U64(typeI64End) || typeI64End > PIdx_I64(typeF64End) || typeF64End > PIdx_F64(typePtrEnd) ||
+		typePtrEnd > PIdx_Ptr(typeU32End) ||
 		typeU32End > PIdx_U32(typeI32End) || typeI32End > PIdx_I32(typeF32End) || typeF32End > PIdx_F32(typeU16End) ||
 		typeU16End > PIdx_U16(typeI16End) || typeI16End > PIdx_I16(typeU8End) ||
 		typeU8End > PIdx_U8(typeI8End) || typeI8End > PIdx_I8(typeBoolEnd) {
 		panic(`error: parameter table: indexes not in order: all parameter index ends MUST be in this EXACT order from smallest to largest:
 	typeU64End <= typeI64End <= typeF64End <=
-	typeAddrEnd <=
+	typePtrEnd <=
 	typeU32End <= typeI32End <= typeF32End <=
 	typeU16End <= typeI16End <=
 	typeU8End <= typeI8End <= typeBoolEnd
@@ -145,7 +145,7 @@ For an example template that fulfills this requirement, see the function body of
 		typeU64:  0,
 		typeI64:  uint16(typeU64End),
 		typeF64:  uint16(typeI64End),
-		typeAddr: uint16(typeAddrEnd),
+		typePtr:  uint16(typePtrEnd),
 		typeU32:  uint16(typeF64End),
 		typeI32:  uint16(typeU32End),
 		typeF32:  uint16(typeI32End),
@@ -160,15 +160,15 @@ For an example template that fulfills this requirement, see the function body of
 		typeU64:  0,
 		typeI64:  uint32(typeU64End) * 8,
 		typeF64:  uint32(typeI64End) * 8,
-		typeAddr: uint32(typeF64End) * 8,
-		typeU32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr),
-		typeI32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeU32End)-typeAddrEnd) * 4),
-		typeF32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeI32End)-typeAddrEnd) * 4),
-		typeU16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeF32End)-typeAddrEnd) * 4),
-		typeI16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeF32End)-typeAddrEnd) * 4) + (uint32(PIdx_F32(typeU16End)-typeF32End) * 2),
-		typeU8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeF32End)-typeAddrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2),
-		typeI8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeF32End)-typeAddrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeU8End)-typeI16End),
-		typeBool: (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typeAddrEnd)-typeF64End) * sizeAddr) + (uint32(PIdx_Addr(typeF32End)-typeAddrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeI8End)-typeI16End),
+		typePtr:  uint32(typeF64End) * 8,
+		typeU32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr),
+		typeI32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeU32End)-typePtrEnd) * 4),
+		typeF32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeI32End)-typePtrEnd) * 4),
+		typeU16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4),
+		typeI16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeU16End)-typeF32End) * 2),
+		typeU8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2),
+		typeI8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeU8End)-typeI16End),
+		typeBool: (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeI8End)-typeI16End),
 	}
 	var valuesByteLen = byteOffsets[typeBool] + uint32(PIdx_I16(typeBoolEnd)-typeI16End)
 	valuesSlice := make([]byte, valuesByteLen)
@@ -328,12 +328,12 @@ func (t *ParamTable) Get_F64(idx PIdx_F64) float64 {
 	return *(*float64)(unsafe.Pointer(memPtr))
 }
 
-func (t *ParamTable) Get_Addr(idx PIdx_Addr) uintptr {
+func (t *ParamTable) Get_Ptr(idx PIdx_Ptr) unsafe.Pointer {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uintptr", typeAddr, false, true)
+	t.checkIdxType(_idx, "unsafe.Pointer", typePtr, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeAddr)
-	return *(*uintptr)(unsafe.Pointer(memPtr))
+	memPtr, _ := t.getBytePtr(_idx, typePtr)
+	return unsafe.Pointer(memPtr)
 }
 
 func (t *ParamTable) set_U8(idx uint16, val uint8, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
@@ -489,11 +489,11 @@ func (t *ParamTable) set_F64(idx uint16, val float64, canBeDerived bool, prevIdx
 	return
 }
 
-func (t *ParamTable) set_Addr(idx uint16, val uintptr, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uintptr", typeAddr, false, canBeDerived)
+func (t *ParamTable) set_Ptr(idx uint16, val unsafe.Pointer, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
+	t.checkIdxType(idx, "unsafe.Pointer", typePtr, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeAddr)
-	valPtr := (*uintptr)(unsafe.Pointer(memPtr))
+	memPtr, _ := t.getBytePtr(idx, typePtr)
+	valPtr := (*unsafe.Pointer)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
 	newPrevIdxs = prevIdxs
@@ -574,10 +574,10 @@ func (t *ParamTable) SetRoot_F64(idx PIdx_F64, val float64) {
 	t.set_F64(_idx, val, false, prev)
 }
 
-func (t *ParamTable) SetRoot_Addr(idx PIdx_Addr, val uintptr) {
+func (t *ParamTable) SetRoot_Ptr(idx PIdx_Ptr, val unsafe.Pointer) {
 	_idx := uint16(idx)
 	prev := []uint16{_idx}
-	t.set_Addr(_idx, val, false, prev)
+	t.set_Ptr(_idx, val, false, prev)
 }
 
 func (t *ParamTable) InitRoot_U8(idx PIdx_U8, val uint8, alwaysUpdate bool) {
@@ -701,7 +701,7 @@ func (t *ParamTable) InitRoot_F64(idx PIdx_F64, val float64, alwaysUpdate bool) 
 	t.set_F64(_idx, val, false, prev)
 }
 
-func (t *ParamTable) InitRoot_Addr(idx PIdx_F64, val uintptr, alwaysUpdate bool) {
+func (t *ParamTable) InitRoot_Ptr(idx PIdx_F64, val unsafe.Pointer, alwaysUpdate bool) {
 	_idx := uint16(idx)
 	prev := []uint16{_idx}
 	f := _PFLAG_INIT
@@ -709,7 +709,7 @@ func (t *ParamTable) InitRoot_Addr(idx PIdx_F64, val uintptr, alwaysUpdate bool)
 		f |= _PFLAG_ALWAYS_UPDATE
 	}
 	setFlag(_idx, t.flags, f)
-	t.set_Addr(_idx, val, false, prev)
+	t.set_Ptr(_idx, val, false, prev)
 }
 
 func (t *ParamTable) initDerivedHookups(idx uint16, alwaysUpdate bool, calcIdx PIdx_Calc, parents []uint16, outputs []uint16) {
@@ -840,8 +840,8 @@ func (t *ParamTable) InitDerived_F64(idx PIdx_F64, alwaysUpdate bool, calcIdx PI
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
-func (t *ParamTable) InitDerived_Addr(idx PIdx_Addr, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uintptr", typeAddr, false, true)
+func (t *ParamTable) InitDerived_Addr(idx PIdx_Ptr, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
+	t.checkIdxType(uint16(idx), "Uintptr", typePtr, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
@@ -934,6 +934,10 @@ func (t CalcInterface) GetInput_F64(inputIdx uint16) float64 {
 	idx := t.inputs[inputIdx]
 	return t.table.Get_F64(PIdx_F64(idx))
 }
+func (t CalcInterface) GetInput_Ptr(inputIdx uint16) unsafe.Pointer {
+	idx := t.inputs[inputIdx]
+	return t.table.Get_Ptr(PIdx_Ptr(idx))
+}
 func (t CalcInterface) GetAllInputs() []uint16 {
 	return t.inputs
 }
@@ -990,4 +994,8 @@ func (t *CalcInterface) SetOutput_I64(outputIdx uint16, val int64) {
 func (t *CalcInterface) SetOutput_F64(outputIdx uint16, val float64) {
 	idx := t.outputs[outputIdx]
 	t.prevIdxs = t.table.set_F64(idx, val, true, t.prevIdxs)
+}
+func (t *CalcInterface) SetOutput_Ptr(outputIdx uint16, val unsafe.Pointer) {
+	idx := t.outputs[outputIdx]
+	t.prevIdxs = t.table.set_Ptr(idx, val, true, t.prevIdxs)
 }

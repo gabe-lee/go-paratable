@@ -34,13 +34,13 @@ func TestParamTable(t *testing.T) {
 	)
 
 	const (
-		FIRST_ADDR_PARAM PIdx_Addr = PIdx_Addr(iota + _I64_PARAMS_END)
+		FIRST_PTR_PARAM PIdx_Ptr = PIdx_Ptr(iota + _I64_PARAMS_END)
 		// ... more float64 param indexes
-		_ADDR_PARAMS_END
+		_PTR_PARAMS_END
 	)
 
 	const (
-		FIRST_U32_PARAM PIdx_U32 = PIdx_U32(iota + _ADDR_PARAMS_END)
+		FIRST_U32_PARAM PIdx_U32 = PIdx_U32(iota + _PTR_PARAMS_END)
 		RECT_DEPTH_1             // example root val
 		RECT_DEPTH_2             // example root val
 		// ... more uint32 param indexes
@@ -177,7 +177,7 @@ func TestParamTable(t *testing.T) {
 
 	var tooLongHookup [277]uint16
 
-	var MyParamTable = NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _ADDR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
+	var MyParamTable = NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _PTR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
 	var InitMyParamTable func() = func() {
 		// Register all calculations first
 		MyParamTable.RegisterCalc(_CALC_AREA_OF_RECTANGLE, func(t *CalcInterface) {
@@ -351,7 +351,7 @@ func TestParamTable(t *testing.T) {
 				t.Errorf("out-of-order NewParamTable did not cause panic with EnableDebug == true")
 			}
 		}()
-		var _ = NewParamTable(PIdx_U64(_U32_PARAMS_END), _I64_PARAMS_END, _F64_PARAMS_END, _ADDR_PARAMS_END, PIdx_U32(_U64_PARAMS_END), _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
+		var _ = NewParamTable(PIdx_U64(_U32_PARAMS_END), _I64_PARAMS_END, _F64_PARAMS_END, _PTR_PARAMS_END, PIdx_U32(_U64_PARAMS_END), _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
 	}()
 	func() {
 		defer func() {
