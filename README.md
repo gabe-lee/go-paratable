@@ -1,4 +1,4 @@
-# goparatable
+# go_param_table
 A parameter heirarchy table, featuring 'root' values and auto-updating 'derived' values based on user registered calculation functions, written in golang
 
   - [What is it and why?](#what-is-it-and-why)
@@ -19,15 +19,15 @@ This package uses minimal special features of golang, relying entirely on base s
 From within your project directory, use the following command:
 
 ```
-go get github.com/gabe-lee/goparatable@latest
+go get github.com/gabe-lee/go_param_table@latest
 ```
 
 Then simply import it wherever it is needed:
 ```golang
-import "github.com/gabe-lee/goparatable"
+import "github.com/gabe-lee/go_param_table"
 ```
 
-[Back to Top](#goparatable)
+[Back to Top](#go_param_table)
 ## Examples
 #### Example 1: UI Positioning
 
@@ -44,7 +44,7 @@ Suppose you had a button that you wanted to ALWAYS position and size relative to
 This can be achieved with this package like so:
 
 ```golang
-import para "github.com/gabe-lee/goparatable"
+import para "github.com/gabe-lee/go_param_table"
 
 type (
     PIdx_F32 = para.PIdx_F32
@@ -154,7 +154,7 @@ func main() {
 
 Thats it! Once the cumbersome initialization process is complete, you no longer need to worry about triggering all the update functions manually or from within some other user-defined web of structs, methods, etc.
 
-[Back to Top](#goparatable)
+[Back to Top](#go_param_table)
 
 ## Pros/Cons/Caveats
 #### Pros
@@ -174,35 +174,36 @@ Thats it! Once the cumbersome initialization process is complete, you no longer 
   - Cumbersome (but straight-forward) to initially set-up
   - Arrays, Slices, and Struct types not directly supported (but can be used by either separating each struct fields into a parameter, or using `uintptr` and `unsafe` to load/store struct/array/slice pointers/lengths/capacities)
   - Currently updates are performed recursively (this is planned to change in the future)
+  - Cannot remove children once they are added (yet)
 
 #### Caveats
   - Safety checks always cause panics, since most if not all errors
   covered by the safety checking would be due to programmer error when
   performing initialization or type mismatches on `Get_()`/`Set_()` functions. This prevents error handling bloat while providing all the error checking most projects would require, and additional error checking can be user defined inside the function bodies of the calculation functions themselves
 
-[Back to Top](#goparatable)
+[Back to Top](#go_param_table)
 ## Quickstart/Template
 Below is provided a template for jump-starting a new ParamTable
 ```golang
-import "github.com/gabe-lee/goparatable"
+import "github.com/gabe-lee/go_param_table"
 
 type (
-	ParamCalc     = goparatable.ParamCalc
-	PIdx_U64      = goparatable.PIdx_U64
-	PIdx_I64      = goparatable.PIdx_I64
-	PIdx_F64      = goparatable.PIdx_F64
-	PIdx_Addr     = goparatable.PIdx_Addr
-	PIdx_U32      = goparatable.PIdx_U32
-	PIdx_I32      = goparatable.PIdx_I32
-	PIdx_F32      = goparatable.PIdx_F32
-	PIdx_U16      = goparatable.PIdx_U16
-	PIdx_I16      = goparatable.PIdx_I16
-	PIdx_U8       = goparatable.PIdx_U8
-	PIdx_I8       = goparatable.PIdx_I8
-	PIdx_Bool     = goparatable.PIdx_Bool
-	PIdx_Calc     = goparatable.PIdx_Calc
-	ParamTable    = goparatable.ParamTable
-	CalcInterface = goparatable.CalcInterface
+	ParamCalc     = go_param_table.ParamCalc
+	PIdx_U64      = go_param_table.PIdx_U64
+	PIdx_I64      = go_param_table.PIdx_I64
+	PIdx_F64      = go_param_table.PIdx_F64
+	PIdx_Addr     = go_param_table.PIdx_Addr
+	PIdx_U32      = go_param_table.PIdx_U32
+	PIdx_I32      = go_param_table.PIdx_I32
+	PIdx_F32      = go_param_table.PIdx_F32
+	PIdx_U16      = go_param_table.PIdx_U16
+	PIdx_I16      = go_param_table.PIdx_I16
+	PIdx_U8       = go_param_table.PIdx_U8
+	PIdx_I8       = go_param_table.PIdx_I8
+	PIdx_Bool     = go_param_table.PIdx_Bool
+	PIdx_Calc     = go_param_table.PIdx_Calc
+	ParamTable    = go_param_table.ParamTable
+	CalcInterface = go_param_table.CalcInterface
 )
 
 const (
@@ -317,9 +318,9 @@ func initFirstCalcDerived(table *ParamTable, alwaysUpdate bool, a PIdx_U64, b PI
 func InitMyParamTable() ParamTable {
 	// This is already the default, but you can set to `false` after you have tested your
 	// table and want more speed
-	goparatable.EnableDebug = true
+	go_param_table.EnableDebug = true
 	// Initialize table with type index ends (each parameter except the last (calcsCount) must be >= the previous parameter)
-	table := goparatable.NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _ADDR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
+	table := go_param_table.NewParamTable(_U64_PARAMS_END, _I64_PARAMS_END, _F64_PARAMS_END, _ADDR_PARAMS_END, _U32_PARAMS_END, _I32_PARAMS_END, _F32_PARAMS_END, _U16_PARAMS_END, _I16_PARAMS_END, _U8_PARAMS_END, _I8_PARAMS_END, _BOOL_PARAMS_END, _CALC_COUNT)
 	// Register all calculations first
 	table.RegisterCalc(_FIRST_CALC, func(t *CalcInterface) {
 		vala := t.GetInput_U64(_IN_FIRST_CALC_A) // first input
@@ -340,10 +341,13 @@ func InitMyParamTable() ParamTable {
 
 var MyParamTable = InitMyParamTable()
 ```
-[Back to Top](#goparatable)
+[Back to Top](#go_param_table)
 ## Future Plans/TODO
   - [x] Core functionality `ParamTable`
   - [ ] Optional UI Layout system that uses `ParamTable`
   - [ ] Additional reduction of memory footprint?
   - [ ] Non-recursive update algorithm
-  - [ ] ~Direct support for arrays/pointers?~
+  - [ ] Helper functions for common calculations/patterns
+#### Non-Goals
+  - Directly Support arrays/pointers as base data types
+    - This can (and in my opinion _should_) be a concern for optional helper functions, some other external library, or user code. This library has no problem storing a slice pointer/length/capacity using the available data types.

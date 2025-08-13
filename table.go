@@ -1,4 +1,4 @@
-package goparatable
+package go_param_table
 
 import (
 	"fmt"
