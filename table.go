@@ -52,6 +52,10 @@ const (
 	size8   uint32 = 1
 )
 
+const (
+	PIDX_NULL uint16 = 65535
+)
+
 var sizeTable = [typeCount]uint32{
 	typeU64:  size64,
 	typeI64:  size64,
