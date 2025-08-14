@@ -345,7 +345,7 @@ var MyParamTable = InitMyParamTable()
 ## Future Plans/TODO
   - [x] Core functionality `ParamTable`
   - [ ] Optional UI Layout system that uses `ParamTable`
-  - [ ] Additional reduction of memory footprint?
+  - [x] Additional reduction of memory footprint (Got 15-25% total mem reduction)
   - [ ] Non-recursive update algorithm
   - [ ] Helper functions for common calculations/patterns
 #### Non-Goals
