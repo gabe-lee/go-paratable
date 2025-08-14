@@ -377,4 +377,5 @@ func TestParamTable(t *testing.T) {
 		}()
 		MyParamTable.Get_I16(FIRST_I16_PARAM)
 	}()
+	t.Logf("TestTable MEM: %d", MyParamTable.TotalMemoryFootprint())
 }

@@ -112,6 +112,6 @@ func TestREADME_Ex1(t *testing.T) {
 	if MyParamTable.Get_F32(Bh) != 236.0 {
 		t.Errorf("example failed: Bw: %f != 336.0", MyParamTable.Get_F32(Bh))
 	}
-
 	// print(&MyParamTable)
+	t.Logf("TestREADME MEM: %d", MyParamTable.TotalMemoryFootprint())
 }
