@@ -1,6 +1,8 @@
 package go_param_table
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestParamTable(t *testing.T) {
 	EnableDebug = true
@@ -377,4 +379,5 @@ func TestParamTable(t *testing.T) {
 		}()
 		MyParamTable.Get_I16(FIRST_I16_PARAM)
 	}()
+	t.Logf("TestTable MEM: %d", MyParamTable.TotalMemoryFootprint())
 }

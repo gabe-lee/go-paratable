@@ -5,7 +5,7 @@ import (
 )
 
 func TestREADME_Ex1(t *testing.T) {
-
+	EnableDebug = true
 	const (
 		// 'root' values
 		Px PIdx_F32 = PIdx_F32(iota)
@@ -114,4 +114,5 @@ func TestREADME_Ex1(t *testing.T) {
 	}
 
 	// print(&MyParamTable)
+	t.Logf("TestTable MEM: %d", MyParamTable.TotalMemoryFootprint())
 }

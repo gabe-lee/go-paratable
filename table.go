@@ -2,6 +2,8 @@ package go_param_table
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"slices"
 	"unsafe"
 )
@@ -10,6 +12,9 @@ import (
 //   - true (default): recommended for develpoment, or any time your program may be stuck in an infinite loop or parameters are not behaving as expected
 //   - false: if you want slightly faster speed in production, have already fully tested your param table with EnableDebug set to true, _AND_ your end users do not have direct access to your ParamTable
 var EnableDebug bool = true
+
+// The output writer for debug messages. If `EnableDebug == false`, this will not be used at all
+var DebugWriter io.Writer = os.Stderr
 
 type (
 	ParamCalc func(c *CalcInterface)
@@ -110,22 +115,11 @@ func initFlagLen(elemCount uint16) int {
 	return int(elemCount+_PFLAG_SUB_PER_CHUNK_MINUS_ONE) >> _PFLAG_SUB_PER_CHUNK_SHIFT
 }
 
-type paramHookups struct {
-	parentsStart     uint32
-	calcOutputsStart uint32
-	childrenStart    uint32
-	parentsLen       uint8
-	calcOutputsLen   uint8
-	calculation      PIdx_Calc
-}
-
 type ParamTable struct {
 	values      []byte
-	hookups     []paramHookups
 	flags       []paramFlags
-	children    []uint16
-	parents     []uint16
-	outputs     []uint16
+	hookups     []hookup
+	hookupData  []uint16
 	calcs       []ParamCalc
 	byteOffsets [typeCount]uint32
 	idxOffsets  [typeCount]uint16
@@ -137,13 +131,14 @@ func NewParamTable(typeU64End PIdx_U64, typeI64End PIdx_I64, typeF64End PIdx_F64
 		typeU32End > PIdx_U32(typeI32End) || typeI32End > PIdx_I32(typeF32End) || typeF32End > PIdx_F32(typeU16End) ||
 		typeU16End > PIdx_U16(typeI16End) || typeI16End > PIdx_I16(typeU8End) ||
 		typeU8End > PIdx_U8(typeI8End) || typeI8End > PIdx_I8(typeBoolEnd) {
-		panic(`error: parameter table: indexes not in order: all parameter index ends MUST be in this EXACT order from smallest to largest:
+		fmt.Fprint(DebugWriter, `fatal: go_param_table: NewParamTable(): indexes not in order: all parameter index ends MUST be in this EXACT order from smallest to largest:
 	typeU64End <= typeI64End <= typeF64End <=
 	typePtrEnd <=
 	typeU32End <= typeI32End <= typeF32End <=
 	typeU16End <= typeI16End <=
 	typeU8End <= typeI8End <= typeBoolEnd
 For an example template that fulfills this requirement, see the function body of 'paratable.TestParamTable(t *testing.T)' or the doc-comment of 'paratable.PARAM_TABLE_TEMPLATE_DOC_COMMENT'`)
+		panic(1)
 	}
 	var idxOffsets = [typeCount]uint16{
 		typeU64:  0,
@@ -176,20 +171,16 @@ For an example template that fulfills this requirement, see the function body of
 	}
 	var valuesByteLen = byteOffsets[typeBool] + uint32(PIdx_I16(typeBoolEnd)-typeI16End)
 	valuesSlice := make([]byte, valuesByteLen)
-	hookupsSlice := make([]paramHookups, valuesIdxLen)
+	hookupsSlice := make([]hookup, valuesIdxLen)
 	calcsSlice := make([]ParamCalc, calcsCount)
-	childrenSlice := make([]uint16, 1)
-	parentsSlice := make([]uint16, 1)
-	calcOutputs := make([]uint16, 1)
+	hookupsDataSlice := make([]uint16, 1)
 	flagsLen := initFlagLen(uint16(valuesIdxLen))
 	flags := make([]paramFlags, flagsLen)
 	return ParamTable{
 		values:      valuesSlice,
+		hookupData:  hookupsDataSlice,
 		hookups:     hookupsSlice,
 		flags:       flags,
-		children:    childrenSlice,
-		parents:     parentsSlice,
-		outputs:     calcOutputs,
 		calcs:       calcsSlice,
 		byteOffsets: byteOffsets,
 		idxOffsets:  idxOffsets,
@@ -199,10 +190,9 @@ For an example template that fulfills this requirement, see the function body of
 func (t *ParamTable) TotalMemoryFootprint() uintptr {
 	size := unsafe.Sizeof(*t)
 	size += uintptr(cap(t.values))
-	size += uintptr(cap(t.hookups)) * unsafe.Sizeof(paramHookups{})
+	size += uintptr(cap(t.hookupData)) * 2
 	size += uintptr(cap(t.flags)) * unsafe.Sizeof(paramFlags(0))
-	size += uintptr(cap(t.children)) * 2
-	size += uintptr(cap(t.outputs)) * 2
+	size += uintptr(cap(t.hookups)) * 4
 	size += uintptr(cap(t.calcs)) * unsafe.Sizeof((ParamCalc)(nil))
 	return size
 }
@@ -211,7 +201,8 @@ func (t *ParamTable) checkInit(idx uint16) {
 	if EnableDebug {
 		f := getFlag(idx, t.flags)
 		if !f.IsInit() {
-			panic(fmt.Sprintf("error: parameter table: parameter index %d was never initialized", idx))
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: parameter index %d was never initialized", idx)
+			panic(1)
 		}
 	}
 }
@@ -219,20 +210,24 @@ func (t *ParamTable) checkInit(idx uint16) {
 func (t *ParamTable) checkIdxType(idx uint16, name string, validType int, final bool, canBeDerived bool) {
 	if EnableDebug {
 		if idx >= uint16(len(t.hookups)) {
-			panic(fmt.Sprintf("error: parameter table: index %d is outside bounds of parameter list (len %d)", idx, len(t.hookups)))
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is outside bounds of parameter list (len %d)", idx, len(t.hookups))
+			panic(1)
 		}
 		if final {
 			if idx < t.idxOffsets[validType] {
-				panic(fmt.Sprintf("error: parameter table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], len(t.hookups)))
+				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], len(t.hookupData))
+				panic(1)
 			}
 		} else {
 			if idx < t.idxOffsets[validType] && idx >= t.idxOffsets[validType+1] {
-				panic(fmt.Sprintf("error: parameter table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], t.idxOffsets[validType+1]))
+				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], t.idxOffsets[validType+1])
+				panic(1)
 			}
 		}
 		if !canBeDerived {
-			if t.hookups[idx].parentsStart != 0 || t.hookups[idx].parentsLen != 0 || t.hookups[idx].calcOutputsStart != 0 || t.hookups[idx].calcOutputsLen != 0 {
-				panic(fmt.Sprintf("error: parameter table: index %d is a derived value (has parents and calculation func), cannot update directly", idx))
+			if t.isDerived(idx) {
+				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is a derived value (has parents and calculation func), cannot update directly", idx)
+				panic(1)
 			}
 		}
 	}
@@ -716,62 +711,56 @@ func (t *ParamTable) InitRoot_Ptr(idx PIdx_F64, val unsafe.Pointer, alwaysUpdate
 	t.set_Ptr(_idx, val, false, prev)
 }
 
+func (t *ParamTable) initHookup(idx uint16, calcIdx PIdx_Calc, parents []uint16, outputs []uint16) {
+	hookStart := uint32(len(t.hookupData))
+	if EnableDebug {
+		if len(parents) > 255 {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: derived values can only have a maximum of 255 parents (calculation inputs), got parent len %d", len(parents))
+			panic(1)
+		}
+		if len(outputs) > 255 {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: derived values can only have a maximum of 255 calculation outputs, got output len %d", len(outputs))
+			panic(1)
+		}
+	}
+	inLen := uint32(len(parents))
+	outLen := uint32(len(outputs))
+	hookLen := _HOOK_OFF_INSTART + inLen + outLen
+	paramsLen := newParamsLen(inLen, outLen)
+	t.hookupData = slices.Grow(t.hookupData, int(hookLen))
+	t.hookupData = append(t.hookupData, uint16(calcIdx), uint16(paramsLen), 0)
+	t.hookupData = append(t.hookupData, parents...)
+	t.hookupData = append(t.hookupData, outputs...)
+	t.hookups[idx] = hookup(hookStart)
+}
+
+func (t *ParamTable) initRootHookupWithChild(rootIdx uint16, childIdx uint16) {
+	hookStart := uint32(len(t.hookupData))
+	hookLen := _HOOK_OFF_INSTART + 1
+	t.hookupData = slices.Grow(t.hookupData, int(hookLen))
+	t.hookupData = append(t.hookupData, 0, 0, 1, childIdx)
+	t.hookups[rootIdx] = hookup(hookStart)
+}
+
 func (t *ParamTable) initDerivedHookups(idx uint16, alwaysUpdate bool, calcIdx PIdx_Calc, parents []uint16, outputs []uint16) {
-	t.hookups[idx].calculation = calcIdx
-	t.hookups[idx].parentsStart = uint32(len(t.parents))
-	t.hookups[idx].calcOutputsStart = uint32(len(t.outputs))
 	f := _PFLAG_INIT
 	if alwaysUpdate {
 		f |= _PFLAG_ALWAYS_UPDATE
 	}
 	setFlag(idx, t.flags, f)
-	if EnableDebug {
-		if len(parents) > 255 {
-			panic(fmt.Sprintf("derived values can only have a maximum of 255 parents (calculation inputs), got parent len %d", len(parents)))
-		}
-		if len(outputs) > 255 {
-			panic(fmt.Sprintf("derived values can only have a maximum of 255 calculation outputs, got output len %d", len(outputs)))
-		}
-	}
-	t.hookups[idx].parentsLen = uint8(len(parents))
-	t.hookups[idx].calcOutputsLen = uint8(len(outputs))
-	t.parents = append(t.parents, parents...)
-	t.outputs = append(t.outputs, outputs...)
-nextParent:
+	t.initHookup(idx, calcIdx, parents, outputs)
 	for _, parent := range parents {
-		if t.hookups[parent].childrenStart == 0 {
-			newStart := uint32(len(t.children))
-			t.hookups[parent].childrenStart = newStart
-			t.children = append(t.children, idx, 0)
-		} else {
-			parentChildrenEnd := t.hookups[parent].childrenStart
-			for {
-				if t.children[parentChildrenEnd] == 0 {
-					break
-				}
-				if t.children[parentChildrenEnd] == idx {
-					continue nextParent
-				}
-				parentChildrenEnd += 1
-			}
-			t.children = slices.Insert(t.children, int(parentChildrenEnd), idx)
-			for i := range t.hookups {
-				if t.hookups[i].childrenStart >= parentChildrenEnd {
-					t.hookups[i].childrenStart += 1
-				}
-			}
-		}
+		t.addChild(parent, idx)
 	}
-	calc := t.getCalc(calcIdx)
-	recalc := CalcInterface{table: t, inputs: parents, outputs: outputs}
-	calc(&recalc)
-	t.updateChildren(idx, []uint16{idx})
+	prevIdxs := t.trigger(idx, []uint16{idx})
+	t.updateChildren(idx, prevIdxs)
 }
 
 func (t *ParamTable) getCalc(calcIdx PIdx_Calc) ParamCalc {
 	if EnableDebug {
 		if t.calcs[calcIdx] == nil {
-			panic(fmt.Sprintf("error: parameter table: calc index %d has not been registered", calcIdx))
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d has not been registered", calcIdx)
+			panic(1)
 		}
 	}
 	return t.calcs[calcIdx]
@@ -780,10 +769,12 @@ func (t *ParamTable) getCalc(calcIdx PIdx_Calc) ParamCalc {
 func (t *ParamTable) RegisterCalc(calcIdx PIdx_Calc, calc ParamCalc) {
 	if EnableDebug {
 		if calcIdx > PIdx_Calc(len(t.calcs)) {
-			panic(fmt.Sprintf("error: parameter table: calc index %d is outside bounds of calc list (len %d)", calcIdx, uint16(len(t.calcs))))
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d is outside bounds of calc list (len %d)", calcIdx, uint16(len(t.calcs)))
+			panic(1)
 		}
 		if t.calcs[calcIdx] != nil {
-			panic(fmt.Sprintf("error: parameter table: calc index %d is already registered", calcIdx))
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d is already registered", calcIdx)
+			panic(1)
 		}
 	}
 	t.calcs[calcIdx] = calc
@@ -851,38 +842,21 @@ func (t *ParamTable) InitDerived_Addr(idx PIdx_Ptr, alwaysUpdate bool, calcIdx P
 
 func (t *ParamTable) updateChildren(idx uint16, prevIdxs []uint16) (newPrevIdxs []uint16) {
 	newPrevIdxs = prevIdxs
-	childIdxIdx := t.hookups[idx].childrenStart
-	if childIdxIdx == 0 {
+	children := t.getChildren(idx)
+	if len(children) == 0 {
 		return
 	}
-	if childIdxIdx >= uint32(len(t.children)) {
-		return
-	}
-	childIdx := t.children[childIdxIdx]
-	for childIdx != 0 {
+	for _, child := range children {
 		if EnableDebug {
 			for _, prevIdx := range prevIdxs {
-				if childIdx == prevIdx {
-					panic(fmt.Sprintf("error: parameter table: cyclic update loop: during update, idx %d was updated higher (previous) in the heirarchy, but idx %d had previous idx %d as a child, creating an infinite loop", prevIdx, idx, prevIdx))
+				if child == prevIdx {
+					fmt.Fprintf(DebugWriter, "fatal: go_param_table: cyclic update loop: during update, idx %d was updated higher (previous) in the heirarchy, but idx %d had previous idx %d as a child, creating an infinite loop", prevIdx, idx, prevIdx)
+					panic(1)
 				}
 			}
-			newPrevIdxs = append(newPrevIdxs, childIdx)
+			newPrevIdxs = append(newPrevIdxs, child)
 		}
-		hookup := t.hookups[childIdx]
-		calc := t.calcs[hookup.calculation]
-		recalc := CalcInterface{
-			table:    t,
-			inputs:   t.parents[hookup.parentsStart : hookup.parentsStart+uint32(hookup.parentsLen)],
-			outputs:  t.outputs[hookup.calcOutputsStart : hookup.calcOutputsStart+uint32(hookup.calcOutputsLen)],
-			prevIdxs: newPrevIdxs,
-		}
-		calc(&recalc)
-		newPrevIdxs = recalc.prevIdxs
-		childIdxIdx += 1
-		if childIdxIdx >= uint32(len(t.children)) {
-			return
-		}
-		childIdx = t.children[childIdxIdx]
+		newPrevIdxs = t.trigger(child, newPrevIdxs)
 	}
 	return
 }
