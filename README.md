@@ -349,5 +349,5 @@ var MyParamTable = InitMyParamTable()
   - [ ] Non-recursive update algorithm
   - [ ] Helper functions for common calculations/patterns
 #### Non-Goals
-  - Directly Support arrays/pointers as base data types
+  - Directly Support arrays/slices as base data types
     - This can (and in my opinion _should_) be a concern for optional helper functions, some other external library, or user code. This library has no problem storing a slice pointer/length/capacity using the available data types.
