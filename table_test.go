@@ -1,6 +1,8 @@
 package go_param_table
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestParamTable(t *testing.T) {
 	EnableDebug = true
