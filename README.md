@@ -7,7 +7,7 @@ A parameter heirarchy table, featuring 'root' values and auto-updating 'derived'
     - [Example 1: UI Positioning](#example-1-ui-positioning)
   - [Pros/Cons/Caveats](#prosconscaveats)
   - [Quickstart/Template](#quickstarttemplate)
-  - [Future Plans/TODO](#future-planstodo)
+  - [Changelog/Goals](#changelog)
 
 ## What is it and why?
 
@@ -342,12 +342,20 @@ func InitMyParamTable() ParamTable {
 var MyParamTable = InitMyParamTable()
 ```
 [Back to Top](#go_param_table)
-## Future Plans/TODO
-  - [x] Core functionality `ParamTable`
+## Changelog
+**v0.8.0**
+  - Initial commited version
+**v0.9.0**
+  - API refactor
+**v0.10.0**
+  - Reduction of memory footprint by around 15-25% (depending on usage)
+**v0.11.0**
+  - IN PROGRESS
+#### Future Goals
   - [ ] Optional UI Layout system that uses `ParamTable`
-  - [x] Additional reduction of memory footprint (Got 15-25% total mem reduction)
   - [ ] Non-recursive update algorithm
   - [ ] Helper functions for common calculations/patterns
+
 #### Non-Goals
   - Directly Support arrays/slices as base data types
     - This can (and in my opinion _should_) be a concern for optional helper functions, some other external library, or user code. This library has no problem storing a slice pointer/length/capacity using the available data types.
