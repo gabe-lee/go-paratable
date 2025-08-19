@@ -14,115 +14,65 @@ import (
 var EnableDebug bool = true
 
 // The output writer for debug messages. If `EnableDebug == false`, this will not be used at all
+//
+// Defaults to `os.Stderr`
 var DebugWriter io.Writer = os.Stderr
 
-type (
-	ParamCalc func(c *CalcInterface)
-	PIdx_U64  uint16
-	PIdx_I64  uint16
-	PIdx_F64  uint16
-	PIdx_Ptr  uint16
-	PIdx_U32  uint16
-	PIdx_I32  uint16
-	PIdx_F32  uint16
-	PIdx_U16  uint16
-	PIdx_I16  uint16
-	PIdx_U8   uint16
-	PIdx_I8   uint16
-	PIdx_Bool uint16
-	PIdx_Calc uint16
-)
+// type paramFlags uint64
 
-const (
-	typeU64 = iota
-	typeI64
-	typeF64
-	typePtr
-	typeU32
-	typeI32
-	typeF32
-	typeU16
-	typeI16
-	typeU8
-	typeI8
-	typeBool
-	typeCount
-)
+// const (
+// 	_PFLAG_INIT paramFlags = 1 << iota
+// 	_PFLAG_ALWAYS_UPDATE
 
-const (
-	size64  uint32 = 8
-	sizePtr uint32 = uint32(unsafe.Sizeof(unsafe.Pointer(nil)))
-	size32  uint32 = 4
-	size16  uint32 = 2
-	size8   uint32 = 1
-)
+// 	_PFLAG_BITS                    = iota
+// 	_PFLAG_MASK                    = (1 << _PFLAG_BITS) - 1
+// 	_PFLAG_CHUNK_BITS              = 64
+// 	_PFLAG_SUB_PER_CHUNK           = _PFLAG_CHUNK_BITS / _PFLAG_BITS
+// 	_PFLAG_SUB_PER_CHUNK_SHIFT     = 5
+// 	_PFLAG_SUB_PER_CHUNK_MINUS_ONE = _PFLAG_SUB_PER_CHUNK - 1
+// )
 
-const (
-	PIDX_NULL uint16 = 65535
-)
+// func (f paramFlags) IsInit() bool {
+// 	return f&_PFLAG_INIT == _PFLAG_INIT
+// }
+// func (f paramFlags) AlwaysUpdate() bool {
+// 	return f&_PFLAG_ALWAYS_UPDATE == _PFLAG_ALWAYS_UPDATE
+// }
 
-var sizeTable = [typeCount]uint32{
-	typeU64:  size64,
-	typeI64:  size64,
-	typeF64:  size64,
-	typePtr:  sizePtr,
-	typeU32:  size32,
-	typeI32:  size32,
-	typeF32:  size32,
-	typeU16:  size16,
-	typeI16:  size16,
-	typeU8:   size8,
-	typeI8:   size8,
-	typeBool: size8,
-}
+// func getFlag(elemIdx uint16, blocks []paramFlags) paramFlags {
+// 	bIdx := elemIdx >> _PFLAG_SUB_PER_CHUNK_SHIFT
+// 	sIdx := elemIdx % _PFLAG_SUB_PER_CHUNK
+// 	block := blocks[bIdx]
+// 	return (block >> (sIdx * _PFLAG_BITS)) & _PFLAG_MASK
+// }
 
-type paramFlags uint64
+// func setFlag(elemIdx uint16, blocks []paramFlags, val paramFlags) {
+// 	bIdx := elemIdx >> _PFLAG_SUB_PER_CHUNK_SHIFT
+// 	sIdx := elemIdx % _PFLAG_SUB_PER_CHUNK
+// 	block := val << paramFlags(sIdx*_PFLAG_BITS)
+// 	blocks[bIdx] |= block
+// }
 
-const (
-	_PFLAG_INIT paramFlags = 1 << iota
-	_PFLAG_ALWAYS_UPDATE
-
-	_PFLAG_BITS                    = iota
-	_PFLAG_MASK                    = (1 << _PFLAG_BITS) - 1
-	_PFLAG_CHUNK_BITS              = 64
-	_PFLAG_SUB_PER_CHUNK           = _PFLAG_CHUNK_BITS / _PFLAG_BITS
-	_PFLAG_SUB_PER_CHUNK_SHIFT     = 5
-	_PFLAG_SUB_PER_CHUNK_MINUS_ONE = _PFLAG_SUB_PER_CHUNK - 1
-)
-
-func (f paramFlags) IsInit() bool {
-	return f&_PFLAG_INIT == _PFLAG_INIT
-}
-func (f paramFlags) AlwaysUpdate() bool {
-	return f&_PFLAG_ALWAYS_UPDATE == _PFLAG_ALWAYS_UPDATE
-}
-
-func getFlag(elemIdx uint16, blocks []paramFlags) paramFlags {
-	bIdx := elemIdx >> _PFLAG_SUB_PER_CHUNK_SHIFT
-	sIdx := elemIdx % _PFLAG_SUB_PER_CHUNK
-	block := blocks[bIdx]
-	return (block >> (sIdx * _PFLAG_BITS)) & _PFLAG_MASK
-}
-
-func setFlag(elemIdx uint16, blocks []paramFlags, val paramFlags) {
-	bIdx := elemIdx >> _PFLAG_SUB_PER_CHUNK_SHIFT
-	sIdx := elemIdx % _PFLAG_SUB_PER_CHUNK
-	block := val << paramFlags(sIdx*_PFLAG_BITS)
-	blocks[bIdx] |= block
-}
-
-func initFlagLen(elemCount uint16) int {
-	return int(elemCount+_PFLAG_SUB_PER_CHUNK_MINUS_ONE) >> _PFLAG_SUB_PER_CHUNK_SHIFT
-}
+// func initFlagLen(elemCount uint16) int {
+// 	return int(elemCount+_PFLAG_SUB_PER_CHUNK_MINUS_ONE) >> _PFLAG_SUB_PER_CHUNK_SHIFT
+// }
 
 type ParamTable struct {
-	values      []byte
-	flags       []paramFlags
-	hookups     []hookup
-	hookupData  []uint16
-	calcs       []ParamCalc
-	byteOffsets [typeCount]uint32
-	idxOffsets  [typeCount]uint16
+	meta_table []metadata
+	vals_u64   []uint64
+	vals_i64   []int64
+	vals_f64   []float64
+	vals_ptr   []unsafe.Pointer
+	vals_u32   []uint32
+	vals_i32   []int32
+	vals_f32   []float32
+	vals_u16   []uint16
+	vals_i16   []int16
+	vals_u8    []uint8
+	vals_i8    []int8
+	vals_bool  []uint
+	hookupData []hookup_data_block
+	calcs      []ParamCalc
 }
 
 func NewParamTable(typeU64End PIdx_U64, typeI64End PIdx_I64, typeF64End PIdx_F64, typePtrEnd PIdx_Ptr, typeU32End PIdx_U32, typeI32End PIdx_I32, typeF32End PIdx_F32, typeU16End PIdx_U16, typeI16End PIdx_I16, typeU8End PIdx_U8, typeI8End PIdx_I8, typeBoolEnd PIdx_Bool, calcsCount PIdx_Calc) ParamTable {
@@ -141,35 +91,35 @@ For an example template that fulfills this requirement, see the function body of
 		panic(1)
 	}
 	var idxOffsets = [typeCount]uint16{
-		typeU64:  0,
-		typeI64:  uint16(typeU64End),
-		typeF64:  uint16(typeI64End),
-		typePtr:  uint16(typePtrEnd),
-		typeU32:  uint16(typeF64End),
-		typeI32:  uint16(typeU32End),
-		typeF32:  uint16(typeI32End),
-		typeU16:  uint16(typeF32End),
-		typeI16:  uint16(typeU16End),
-		typeU8:   uint16(typeI16End),
-		typeI8:   uint16(typeU8End),
-		typeBool: uint16(typeI8End),
+		TypeU64:  0,
+		TypeI64:  uint16(typeU64End),
+		TypeF64:  uint16(typeI64End),
+		TypePtr:  uint16(typePtrEnd),
+		TypeU32:  uint16(typeF64End),
+		TypeI32:  uint16(typeU32End),
+		TypeF32:  uint16(typeI32End),
+		TypeU16:  uint16(typeF32End),
+		TypeI16:  uint16(typeU16End),
+		TypeU8:   uint16(typeI16End),
+		TypeI8:   uint16(typeU8End),
+		TypeBool: uint16(typeI8End),
 	}
 	var valuesIdxLen = typeBoolEnd
 	var byteOffsets = [typeCount]uint32{
-		typeU64:  0,
-		typeI64:  uint32(typeU64End) * 8,
-		typeF64:  uint32(typeI64End) * 8,
-		typePtr:  uint32(typeF64End) * 8,
-		typeU32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr),
-		typeI32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeU32End)-typePtrEnd) * 4),
-		typeF32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeI32End)-typePtrEnd) * 4),
-		typeU16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4),
-		typeI16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeU16End)-typeF32End) * 2),
-		typeU8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2),
-		typeI8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeU8End)-typeI16End),
-		typeBool: (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeI8End)-typeI16End),
+		TypeU64:  0,
+		TypeI64:  uint32(typeU64End) * 8,
+		TypeF64:  uint32(typeI64End) * 8,
+		TypePtr:  uint32(typeF64End) * 8,
+		TypeU32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr),
+		TypeI32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeU32End)-typePtrEnd) * 4),
+		TypeF32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeI32End)-typePtrEnd) * 4),
+		TypeU16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4),
+		TypeI16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeU16End)-typeF32End) * 2),
+		TypeU8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2),
+		TypeI8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeU8End)-typeI16End),
+		TypeBool: (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeI8End)-typeI16End),
 	}
-	var valuesByteLen = byteOffsets[typeBool] + uint32(PIdx_I16(typeBoolEnd)-typeI16End)
+	var valuesByteLen = byteOffsets[TypeBool] + uint32(PIdx_I16(typeBoolEnd)-typeI16End)
 	valuesSlice := make([]byte, valuesByteLen)
 	hookupsSlice := make([]hookup, valuesIdxLen)
 	calcsSlice := make([]ParamCalc, calcsCount)
@@ -241,104 +191,104 @@ func (t *ParamTable) getBytePtr(idx uint16, typeIdx int) (ptr *byte, subIdx uint
 
 func (t *ParamTable) Get_U8(idx PIdx_U8) uint8 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint8", typeU8, false, true)
+	t.checkIdxType(_idx, "Uint8", TypeU8, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeU8)
+	memPtr, _ := t.getBytePtr(_idx, TypeU8)
 	return *memPtr
 }
 
 func (t *ParamTable) Get_I8(idx PIdx_I8) int8 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int8", typeI8, false, true)
+	t.checkIdxType(_idx, "Int8", TypeI8, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeI8)
+	memPtr, _ := t.getBytePtr(_idx, TypeI8)
 	return *(*int8)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_Bool(idx PIdx_Bool) bool {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Bool", typeBool, true, true)
+	t.checkIdxType(_idx, "Bool", TypeBool, true, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeBool)
+	memPtr, _ := t.getBytePtr(_idx, TypeBool)
 	return *(*bool)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_U16(idx PIdx_U16) uint16 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint16", typeU16, false, true)
+	t.checkIdxType(_idx, "Uint16", TypeU16, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeU16)
+	memPtr, _ := t.getBytePtr(_idx, TypeU16)
 	return *(*uint16)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_I16(idx PIdx_I16) int16 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int16", typeI16, false, true)
+	t.checkIdxType(_idx, "Int16", TypeI16, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeI16)
+	memPtr, _ := t.getBytePtr(_idx, TypeI16)
 	return *(*int16)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_U32(idx PIdx_U32) uint32 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint32", typeU32, false, true)
+	t.checkIdxType(_idx, "Uint32", TypeU32, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeU32)
+	memPtr, _ := t.getBytePtr(_idx, TypeU32)
 	return *(*uint32)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_I32(idx PIdx_I32) int32 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int32", typeI32, false, true)
+	t.checkIdxType(_idx, "Int32", TypeI32, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeI32)
+	memPtr, _ := t.getBytePtr(_idx, TypeI32)
 	return *(*int32)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_F32(idx PIdx_F32) float32 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Float32", typeF32, false, true)
+	t.checkIdxType(_idx, "Float32", TypeF32, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeF32)
+	memPtr, _ := t.getBytePtr(_idx, TypeF32)
 	return *(*float32)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_U64(idx PIdx_U64) uint64 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint64", typeU64, false, true)
+	t.checkIdxType(_idx, "Uint64", TypeU64, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeU64)
+	memPtr, _ := t.getBytePtr(_idx, TypeU64)
 	return *(*uint64)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_I64(idx PIdx_I64) int64 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int64", typeI64, false, true)
+	t.checkIdxType(_idx, "Int64", TypeI64, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeI64)
+	memPtr, _ := t.getBytePtr(_idx, TypeI64)
 	return *(*int64)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_F64(idx PIdx_F64) float64 {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Float64", typeF64, false, true)
+	t.checkIdxType(_idx, "Float64", TypeF64, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typeF64)
+	memPtr, _ := t.getBytePtr(_idx, TypeF64)
 	return *(*float64)(unsafe.Pointer(memPtr))
 }
 
 func (t *ParamTable) Get_Ptr(idx PIdx_Ptr) unsafe.Pointer {
 	_idx := uint16(idx)
-	t.checkIdxType(_idx, "unsafe.Pointer", typePtr, false, true)
+	t.checkIdxType(_idx, "unsafe.Pointer", TypePtr, false, true)
 	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, typePtr)
+	memPtr, _ := t.getBytePtr(_idx, TypePtr)
 	return unsafe.Pointer(memPtr)
 }
 
 func (t *ParamTable) set_U8(idx uint16, val uint8, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint8", typeU8, false, canBeDerived)
+	t.checkIdxType(idx, "Uint8", TypeU8, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeU8)
+	memPtr, _ := t.getBytePtr(idx, TypeU8)
 	oldVal := *memPtr
 	*memPtr = val
 	newPrevIdxs = prevIdxs
@@ -349,9 +299,9 @@ func (t *ParamTable) set_U8(idx uint16, val uint8, canBeDerived bool, prevIdxs [
 }
 
 func (t *ParamTable) set_I8(idx uint16, val int8, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int8", typeI8, false, canBeDerived)
+	t.checkIdxType(idx, "Int8", TypeI8, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeI8)
+	memPtr, _ := t.getBytePtr(idx, TypeI8)
 	valPtr := (*int8)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -363,9 +313,9 @@ func (t *ParamTable) set_I8(idx uint16, val int8, canBeDerived bool, prevIdxs []
 }
 
 func (t *ParamTable) set_Bool(idx uint16, val bool, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Bool", typeBool, true, canBeDerived)
+	t.checkIdxType(idx, "Bool", TypeBool, true, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeBool)
+	memPtr, _ := t.getBytePtr(idx, TypeBool)
 	valPtr := (*bool)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -377,9 +327,9 @@ func (t *ParamTable) set_Bool(idx uint16, val bool, canBeDerived bool, prevIdxs 
 }
 
 func (t *ParamTable) set_U16(idx uint16, val uint16, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint16", typeU16, false, canBeDerived)
+	t.checkIdxType(idx, "Uint16", TypeU16, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeU16)
+	memPtr, _ := t.getBytePtr(idx, TypeU16)
 	valPtr := (*uint16)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -391,9 +341,9 @@ func (t *ParamTable) set_U16(idx uint16, val uint16, canBeDerived bool, prevIdxs
 }
 
 func (t *ParamTable) set_I16(idx uint16, val int16, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int16", typeI16, false, canBeDerived)
+	t.checkIdxType(idx, "Int16", TypeI16, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeI16)
+	memPtr, _ := t.getBytePtr(idx, TypeI16)
 	valPtr := (*int16)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -405,9 +355,9 @@ func (t *ParamTable) set_I16(idx uint16, val int16, canBeDerived bool, prevIdxs 
 }
 
 func (t *ParamTable) set_U32(idx uint16, val uint32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint32", typeU32, false, canBeDerived)
+	t.checkIdxType(idx, "Uint32", TypeU32, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeU32)
+	memPtr, _ := t.getBytePtr(idx, TypeU32)
 	valPtr := (*uint32)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -419,9 +369,9 @@ func (t *ParamTable) set_U32(idx uint16, val uint32, canBeDerived bool, prevIdxs
 }
 
 func (t *ParamTable) set_I32(idx uint16, val int32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int32", typeI32, false, canBeDerived)
+	t.checkIdxType(idx, "Int32", TypeI32, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeI32)
+	memPtr, _ := t.getBytePtr(idx, TypeI32)
 	valPtr := (*int32)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -433,9 +383,9 @@ func (t *ParamTable) set_I32(idx uint16, val int32, canBeDerived bool, prevIdxs 
 }
 
 func (t *ParamTable) set_F32(idx uint16, val float32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Float32", typeF32, false, canBeDerived)
+	t.checkIdxType(idx, "Float32", TypeF32, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeF32)
+	memPtr, _ := t.getBytePtr(idx, TypeF32)
 	valPtr := (*float32)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -447,9 +397,9 @@ func (t *ParamTable) set_F32(idx uint16, val float32, canBeDerived bool, prevIdx
 }
 
 func (t *ParamTable) set_U64(idx uint16, val uint64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint64", typeU64, false, canBeDerived)
+	t.checkIdxType(idx, "Uint64", TypeU64, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeU64)
+	memPtr, _ := t.getBytePtr(idx, TypeU64)
 	valPtr := (*uint64)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -461,9 +411,9 @@ func (t *ParamTable) set_U64(idx uint16, val uint64, canBeDerived bool, prevIdxs
 }
 
 func (t *ParamTable) set_I64(idx uint16, val int64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int64", typeI64, false, canBeDerived)
+	t.checkIdxType(idx, "Int64", TypeI64, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeI64)
+	memPtr, _ := t.getBytePtr(idx, TypeI64)
 	valPtr := (*int64)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -475,9 +425,9 @@ func (t *ParamTable) set_I64(idx uint16, val int64, canBeDerived bool, prevIdxs 
 }
 
 func (t *ParamTable) set_F64(idx uint16, val float64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Float64", typeF64, false, canBeDerived)
+	t.checkIdxType(idx, "Float64", TypeF64, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typeF64)
+	memPtr, _ := t.getBytePtr(idx, TypeF64)
 	valPtr := (*float64)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -489,9 +439,9 @@ func (t *ParamTable) set_F64(idx uint16, val float64, canBeDerived bool, prevIdx
 }
 
 func (t *ParamTable) set_Ptr(idx uint16, val unsafe.Pointer, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "unsafe.Pointer", typePtr, false, canBeDerived)
+	t.checkIdxType(idx, "unsafe.Pointer", TypePtr, false, canBeDerived)
 	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, typePtr)
+	memPtr, _ := t.getBytePtr(idx, TypePtr)
 	valPtr := (*unsafe.Pointer)(unsafe.Pointer(memPtr))
 	oldVal := *valPtr
 	*valPtr = val
@@ -781,62 +731,62 @@ func (t *ParamTable) RegisterCalc(calcIdx PIdx_Calc, calc ParamCalc) {
 }
 
 func (t *ParamTable) InitDerived_U8(idx PIdx_U8, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint8", typeU8, false, true)
+	t.checkIdxType(uint16(idx), "Uint8", TypeU8, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_I8(idx PIdx_I8, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int8", typeI8, false, true)
+	t.checkIdxType(uint16(idx), "Int8", TypeI8, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_Bool(idx PIdx_Bool, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Bool", typeBool, true, true)
+	t.checkIdxType(uint16(idx), "Bool", TypeBool, true, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_U16(idx PIdx_U16, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint16", typeU16, false, true)
+	t.checkIdxType(uint16(idx), "Uint16", TypeU16, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_I16(idx PIdx_I16, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int16", typeI16, false, true)
+	t.checkIdxType(uint16(idx), "Int16", TypeI16, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_U32(idx PIdx_U32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint32", typeU32, false, true)
+	t.checkIdxType(uint16(idx), "Uint32", TypeU32, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_I32(idx PIdx_I32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int32", typeI32, false, true)
+	t.checkIdxType(uint16(idx), "Int32", TypeI32, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_F32(idx PIdx_F32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Float32", typeF32, false, true)
+	t.checkIdxType(uint16(idx), "Float32", TypeF32, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_U64(idx PIdx_U64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint64", typeU64, false, true)
+	t.checkIdxType(uint16(idx), "Uint64", TypeU64, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_I64(idx PIdx_I64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int64", typeI64, false, true)
+	t.checkIdxType(uint16(idx), "Int64", TypeI64, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_F64(idx PIdx_F64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Float64", typeF64, false, true)
+	t.checkIdxType(uint16(idx), "Float64", TypeF64, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 
 func (t *ParamTable) InitDerived_Addr(idx PIdx_Ptr, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uintptr", typePtr, false, true)
+	t.checkIdxType(uint16(idx), "Uintptr", TypePtr, false, true)
 	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
 }
 

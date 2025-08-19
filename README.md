@@ -343,14 +343,14 @@ var MyParamTable = InitMyParamTable()
 ```
 [Back to Top](#go_param_table)
 ## Changelog
-**v0.8.0**
-  - Initial commited version
-**v0.9.0**
-  - API refactor
-**v0.10.0**
-  - Reduction of memory footprint by around 15-25% (depending on usage)
-**v0.11.0**
+#### v0.11.0
   - IN PROGRESS
+#### v0.10.0
+  - Reduction of memory footprint by around 15-25% (depending on usage)
+#### v0.9.0
+  - API refactor
+#### v0.8.0
+  - Initial commited version
 #### Future Goals
   - [ ] Optional UI Layout system that uses `ParamTable`
   - [ ] Non-recursive update algorithm
