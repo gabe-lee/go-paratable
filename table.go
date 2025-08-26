@@ -3,20 +3,32 @@ package go_param_table
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
-	"slices"
 	"unsafe"
+
+	// _ "github.com/gabe-lee/go_effect_sort"
+	ll "github.com/gabe-lee/go_list_like"
+
+	// mem "github.com/gabe-lee/go_manual_memory"
+	rq "github.com/gabe-lee/go_ring_queue"
 )
 
-// Whether or not any ParamTable's insert additional sanity checks on input/output operations
+// Whether or not any ParamTable's insert additional sanity/safety checks on input/output operations
 //   - true (default): recommended for develpoment, or any time your program may be stuck in an infinite loop or parameters are not behaving as expected
-//   - false: if you want slightly faster speed in production, have already fully tested your param table with EnableDebug set to true, _AND_ your end users do not have direct access to your ParamTable
-var EnableDebug bool = true
+//   - false: if you want slightly faster speed in production, have already fully tested your param table with EnableSafetyChecks set to true, _AND_ your end users do not have direct access to your ParamTable
+var EnableSafetyChecks bool = true
 
 // The output writer for debug messages. If `EnableDebug == false`, this will not be used at all
 //
 // Defaults to `os.Stderr`
 var DebugWriter io.Writer = os.Stderr
+
+// // The Allocator to use for the parameter table
+// //
+// // Defaults to GoAllocator, which is a simple wrapper around the standard
+// // golang allocation strategy
+// var DataAllocator mem.Allocator = mem.NewGoAllocator()
 
 // type paramFlags uint64
 
@@ -57,873 +69,833 @@ var DebugWriter io.Writer = os.Stderr
 // 	return int(elemCount+_PFLAG_SUB_PER_CHUNK_MINUS_ONE) >> _PFLAG_SUB_PER_CHUNK_SHIFT
 // }
 
+type cInit bool
+
+const (
+	_mustBeInit  cInit = true
+	_canBeUninit cInit = false
+)
+
+type cDerived bool
+
+const (
+	_cannotBeDerived cDerived = true
+	_canBeDerived    cDerived = false
+)
+
+type cRoot bool
+
+const (
+	_cannotBeRoot cRoot = true
+	_canBeRoot    cRoot = false
+)
+
 type ParamTable struct {
-	meta_table []metadata
-	vals_u64   []uint64
-	vals_i64   []int64
-	vals_f64   []float64
-	vals_ptr   []unsafe.Pointer
-	vals_u32   []uint32
-	vals_i32   []int32
-	vals_f32   []float32
-	vals_u16   []uint16
-	vals_i16   []int16
-	vals_u8    []uint8
-	vals_i8    []int8
-	vals_bool  []uint
-	hookupData []hookup_data_block
-	calcs      []ParamCalc
+	// alloc        mem.Allocator
+	meta_table   ll.SliceAdapter[metadata]
+	vals_8       ll.SliceAdapter[uint8]
+	vals_16      ll.SliceAdapter[uint16]
+	vals_32      ll.SliceAdapter[uint32]
+	vals_64      ll.SliceAdapter[uint64]
+	vals_ptr     ll.SliceAdapter[unsafe.Pointer]
+	calcs        ll.SliceAdapter[ParamCalc]
+	update_queue rq.RingQueue[ParamID]
+	prev_idxs    ll.SliceAdapter[ParamID]
 }
 
-func NewParamTable(typeU64End PIdx_U64, typeI64End PIdx_I64, typeF64End PIdx_F64, typePtrEnd PIdx_Ptr, typeU32End PIdx_U32, typeI32End PIdx_I32, typeF32End PIdx_F32, typeU16End PIdx_U16, typeI16End PIdx_I16, typeU8End PIdx_U8, typeI8End PIdx_I8, typeBoolEnd PIdx_Bool, calcsCount PIdx_Calc) ParamTable {
-	if typeU64End > PIdx_U64(typeI64End) || typeI64End > PIdx_I64(typeF64End) || typeF64End > PIdx_F64(typePtrEnd) ||
-		typePtrEnd > PIdx_Ptr(typeU32End) ||
-		typeU32End > PIdx_U32(typeI32End) || typeI32End > PIdx_I32(typeF32End) || typeF32End > PIdx_F32(typeU16End) ||
-		typeU16End > PIdx_U16(typeI16End) || typeI16End > PIdx_I16(typeU8End) ||
-		typeU8End > PIdx_U8(typeI8End) || typeI8End > PIdx_I8(typeBoolEnd) {
-		fmt.Fprint(DebugWriter, `fatal: go_param_table: NewParamTable(): indexes not in order: all parameter index ends MUST be in this EXACT order from smallest to largest:
-	typeU64End <= typeI64End <= typeF64End <=
-	typePtrEnd <=
-	typeU32End <= typeI32End <= typeF32End <=
-	typeU16End <= typeI16End <=
-	typeU8End <= typeI8End <= typeBoolEnd
-For an example template that fulfills this requirement, see the function body of 'paratable.TestParamTable(t *testing.T)' or the doc-comment of 'paratable.PARAM_TABLE_TEMPLATE_DOC_COMMENT'`)
-		panic(1)
-	}
-	var idxOffsets = [typeCount]uint16{
-		TypeU64:  0,
-		TypeI64:  uint16(typeU64End),
-		TypeF64:  uint16(typeI64End),
-		TypePtr:  uint16(typePtrEnd),
-		TypeU32:  uint16(typeF64End),
-		TypeI32:  uint16(typeU32End),
-		TypeF32:  uint16(typeI32End),
-		TypeU16:  uint16(typeF32End),
-		TypeI16:  uint16(typeU16End),
-		TypeU8:   uint16(typeI16End),
-		TypeI8:   uint16(typeU8End),
-		TypeBool: uint16(typeI8End),
-	}
-	var valuesIdxLen = typeBoolEnd
-	var byteOffsets = [typeCount]uint32{
-		TypeU64:  0,
-		TypeI64:  uint32(typeU64End) * 8,
-		TypeF64:  uint32(typeI64End) * 8,
-		TypePtr:  uint32(typeF64End) * 8,
-		TypeU32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr),
-		TypeI32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeU32End)-typePtrEnd) * 4),
-		TypeF32:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeI32End)-typePtrEnd) * 4),
-		TypeU16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4),
-		TypeI16:  (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeU16End)-typeF32End) * 2),
-		TypeU8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2),
-		TypeI8:   (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeU8End)-typeI16End),
-		TypeBool: (uint32(typeF64End) * 8) + (uint32(PIdx_F64(typePtrEnd)-typeF64End) * sizePtr) + (uint32(PIdx_Ptr(typeF32End)-typePtrEnd) * 4) + (uint32(PIdx_F32(typeI16End)-typeF32End) * 2) + uint32(PIdx_I16(typeI8End)-typeI16End),
-	}
-	var valuesByteLen = byteOffsets[TypeBool] + uint32(PIdx_I16(typeBoolEnd)-typeI16End)
-	valuesSlice := make([]byte, valuesByteLen)
-	hookupsSlice := make([]hookup, valuesIdxLen)
-	calcsSlice := make([]ParamCalc, calcsCount)
-	hookupsDataSlice := make([]uint16, 1)
-	flagsLen := initFlagLen(uint16(valuesIdxLen))
-	flags := make([]paramFlags, flagsLen)
+func NewParamTable(initCap int) ParamTable {
 	return ParamTable{
-		values:      valuesSlice,
-		hookupData:  hookupsDataSlice,
-		hookups:     hookupsSlice,
-		flags:       flags,
-		calcs:       calcsSlice,
-		byteOffsets: byteOffsets,
-		idxOffsets:  idxOffsets,
+		// alloc:        alloc,
+		meta_table:   ll.EmptySliceAdapter[metadata](initCap),
+		vals_8:       ll.EmptySliceAdapter[uint8](0),
+		vals_16:      ll.EmptySliceAdapter[uint16](0),
+		vals_32:      ll.EmptySliceAdapter[uint32](0),
+		vals_64:      ll.EmptySliceAdapter[uint64](0),
+		vals_ptr:     ll.EmptySliceAdapter[unsafe.Pointer](0),
+		calcs:        ll.EmptySliceAdapter[ParamCalc](0),
+		update_queue: rq.New[ParamID](1),
+		prev_idxs:    ll.EmptySliceAdapter[ParamID](0),
 	}
 }
 
 func (t *ParamTable) TotalMemoryFootprint() uintptr {
-	size := unsafe.Sizeof(*t)
-	size += uintptr(cap(t.values))
-	size += uintptr(cap(t.hookupData)) * 2
-	size += uintptr(cap(t.flags)) * unsafe.Sizeof(paramFlags(0))
-	size += uintptr(cap(t.hookups)) * 4
-	size += uintptr(cap(t.calcs)) * unsafe.Sizeof((ParamCalc)(nil))
+	size := unsafe.Sizeof(ParamTable{})
+
+	size += uintptr(t.meta_table.Cap()) * unsafe.Sizeof(metadata{})
+	size += uintptr(t.vals_8.Cap())
+	size += uintptr(t.vals_16.Cap()) * 2
+	size += uintptr(t.vals_32.Cap()) * 4
+	size += uintptr(t.vals_64.Cap()) * 8
+	size += uintptr(t.vals_ptr.Cap()) * unsafe.Sizeof(unsafe.Pointer(uintptr(0)))
+	size += uintptr(t.calcs.Cap()) * unsafe.Sizeof(func() {})
+	size += uintptr(t.update_queue.Cap()) * 2
+	size += uintptr(t.prev_idxs.Cap()) * 2
+	ll.DoActionOnAllItems(&t.meta_table, func(slice ll.SliceLike[metadata], idx int, item metadata) {
+		size += uintptr(item.hookupsRaw.Cap()) * 2
+	})
 	return size
 }
 
-func (t *ParamTable) checkInit(idx uint16) {
-	if EnableDebug {
-		f := getFlag(idx, t.flags)
-		if !f.IsInit() {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: parameter index %d was never initialized", idx)
-			panic(1)
-		}
+func (t *ParamTable) beginUpdate(rootIdx ParamID) {
+	if EnableSafetyChecks {
+		ll.Clear(&t.prev_idxs)
+		ll.AppendV(&t.prev_idxs, rootIdx)
+	}
+	t.update_queue.Clear()
+}
+
+func (t *ParamTable) finishUpdate() {
+	nextIdx, hasNext := t.update_queue.Dequeue()
+	for hasNext {
+		meta := t.meta_table.Get(int(nextIdx))
+		t.doUpdate(meta)
+		nextIdx, hasNext = t.update_queue.Dequeue()
 	}
 }
 
-func (t *ParamTable) checkIdxType(idx uint16, name string, validType int, final bool, canBeDerived bool) {
-	if EnableDebug {
-		if idx >= uint16(len(t.hookups)) {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is outside bounds of parameter list (len %d)", idx, len(t.hookups))
-			panic(1)
+func (t *ParamTable) doUpdate(meta metadata) {
+	hooks := meta.getHookups(t)
+	iface := CalcInterface{
+		table:   t,
+		inputs:  hooks.parents,
+		outputs: hooks.siblings,
+	}
+	hooks.calc(&iface)
+}
+
+func (t *ParamTable) newValU8(val uint8) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_8, val))
+	return
+}
+func (t *ParamTable) newValI8(val int8) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_8, 0))
+	ll.SetUnsafeCast(&t.vals_8, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValBool(val bool) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_8, 0))
+	ll.SetUnsafeCast(&t.vals_8, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValU16(val uint16) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_16, val))
+	return
+}
+func (t *ParamTable) newValI16(val int16) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_16, 0))
+	ll.SetUnsafeCast(&t.vals_16, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValU32(val uint32) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_32, val))
+	return
+}
+func (t *ParamTable) newValI32(val int32) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_32, 0))
+	ll.SetUnsafeCast(&t.vals_32, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValF32(val float32) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_32, 0))
+	ll.SetUnsafeCast(&t.vals_32, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValU64(val uint64) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_64, val))
+	return
+}
+func (t *ParamTable) newValI64(val int64) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_64, 0))
+	ll.SetUnsafeCast(&t.vals_64, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValF64(val float64) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_64, 0))
+	ll.SetUnsafeCast(&t.vals_64, int(valIdx), val)
+	return
+}
+func (t *ParamTable) newValPtr(val unsafe.Pointer) (valIdx uint16) {
+	valIdx = uint16(ll.PushGetIdx(&t.vals_ptr, val))
+	return
+}
+
+func (t *ParamTable) newMetadataRoot(valIdx uint16, setType ParamType, alwaysUpdate bool) (id ParamID) {
+	meta := metadata{
+		hookupsRaw:    ll.EmptySliceAdapter[uint16](0),
+		calcId:        math.MaxUint16,
+		childrenStart: 0,
+		siblingsStart: 0,
+		valIdx:        valIdx,
+		pType:         setType,
+		flags:         _FLAG_IS_USED,
+	}
+	meta.set_always_update(alwaysUpdate)
+	id = ParamID(ll.PushGetIdx(&t.meta_table, meta))
+	return
+}
+
+func (t *ParamTable) newMetadataDerivedSingle(valIdx uint16, setType ParamType, alwaysUpdate bool, calcId CalcID, parents []ParamID) (meta metadata, id ParamID) {
+	meta = metadata{
+		hookupsRaw:    ll.EmptySliceAdapter[uint16](0),
+		calcId:        calcId,
+		childrenStart: 0,
+		siblingsStart: 0,
+		valIdx:        valIdx,
+		pType:         setType,
+		flags:         _FLAG_IS_USED,
+	}
+	meta.set_has_calc(true)
+	meta.set_has_parent(true)
+	meta.set_has_siblings(true)
+	meta.set_always_update(alwaysUpdate)
+	meta.appendParents(parents)
+	id = ParamID(ll.PushGetIdx(&t.meta_table, meta))
+	for _, p := range parents {
+		pmeta := t.meta_table.Get(int(p))
+		pmeta.appendChild(id)
+		t.meta_table.Set(int(p), pmeta)
+	}
+	meta.appendSibling(id)
+	ll.Set(&t.meta_table, int(id), meta)
+	return
+}
+
+func (t *ParamTable) newMetadataDerivedLinkedUninitSiblings(valIdx uint16, setType ParamType, alwaysUpdate bool, calcId CalcID, parents []ParamID) (id ParamID) {
+	meta := metadata{
+		hookupsRaw:    ll.EmptySliceAdapter[uint16](0),
+		calcId:        calcId,
+		childrenStart: 0,
+		siblingsStart: 0,
+		valIdx:        valIdx,
+		pType:         setType,
+		flags:         _FLAG_IS_USED,
+	}
+	meta.set_has_calc(true)
+	meta.set_has_parent(true)
+	meta.set_has_siblings(true)
+	meta.set_always_update(alwaysUpdate)
+	meta.appendParents(parents)
+	id = ParamID(ll.PushGetIdx(&t.meta_table, meta))
+	return
+}
+
+func (t *ParamTable) getMetaWithCheck(idx ParamID, validType ParamType, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) (meta metadata) {
+	if EnableSafetyChecks {
+		if idx >= ParamID(t.meta_table.Len()) {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is outside bounds of metadata list (len %d)", idx, t.meta_table.Len())
+			panic("FATAL")
 		}
-		if final {
-			if idx < t.idxOffsets[validType] {
-				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], len(t.hookupData))
-				panic(1)
+		meta = ll.Get(&t.meta_table, int(idx))
+		if mustBeInit == _mustBeInit && meta.is_free() {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is a free metadata index (previously used, but deleted)", idx)
+			panic("FATAL")
+		}
+		if meta.pType != validType {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is not a %s value, (found %s value)", idx, typeNames[validType], typeNames[meta.pType])
+			panic("FATAL")
+		}
+		if cannotBeDerived == _cannotBeDerived && (meta.has_parent() || meta.has_calc()) {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is a derived value (has parents and/or calculation func), expected root value", idx)
+			panic("FATAL")
+		}
+		if cannotBeRoot == _cannotBeRoot && !meta.has_parent() && !meta.has_calc() {
+			fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is a root value (has no parents or calculation func), expected derived value", idx)
+			panic("FATAL")
+		}
+	} else {
+		meta = ll.Get(&t.meta_table, int(idx))
+	}
+	return
+}
+
+func (t *ParamTable) Get_U8(idx ParamID) uint8 {
+	meta := t.getMetaWithCheck(idx, TypeU8, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.Get(&t.vals_8, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_I8(idx ParamID) int8 {
+	meta := t.getMetaWithCheck(idx, TypeI8, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint8, int8](&t.vals_8, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_Bool(idx ParamID) bool {
+	meta := t.getMetaWithCheck(idx, TypeBool, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint8, bool](&t.vals_8, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_U16(idx ParamID) uint16 {
+	meta := t.getMetaWithCheck(idx, TypeU8, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.Get(&t.vals_16, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_I16(idx ParamID) int16 {
+	meta := t.getMetaWithCheck(idx, TypeI16, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint16, int16](&t.vals_16, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_U32(idx ParamID) uint32 {
+	meta := t.getMetaWithCheck(idx, TypeU32, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.Get(&t.vals_32, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_I32(idx ParamID) int32 {
+	meta := t.getMetaWithCheck(idx, TypeI32, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint32, int32](&t.vals_32, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_F32(idx ParamID) float32 {
+	meta := t.getMetaWithCheck(idx, TypeF32, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint32, float32](&t.vals_32, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_U64(idx ParamID) uint64 {
+	meta := t.getMetaWithCheck(idx, TypeU64, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.Get(&t.vals_64, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_I64(idx ParamID) int64 {
+	meta := t.getMetaWithCheck(idx, TypeI64, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint64, int64](&t.vals_64, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_F64(idx ParamID) float64 {
+	meta := t.getMetaWithCheck(idx, TypeF64, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.GetUnsafeCast[uint64, float64](&t.vals_64, int(meta.valIdx))
+}
+
+func (t *ParamTable) Get_Ptr(idx ParamID) unsafe.Pointer {
+	meta := t.getMetaWithCheck(idx, TypePtr, _mustBeInit, _canBeDerived, _canBeRoot)
+	return ll.Get(&t.vals_ptr, int(meta.valIdx))
+}
+
+func (t *ParamTable) queueChildren(meta metadata) {
+	children := meta.getChildren()
+	//VERIFY due to the new architechture of ParamTable, cyclic references should be impossible to initialize?
+	// if EnableSafetyChecks {
+	// 	var i = 0
+	// 	var lim = t.prev_idxs.Len()
+	// 	for i < lim {
+	// 		prev := ll.Get(&t.prev_idxs, i)
+	// 		for _, c := range children {
+	// 			if prev == c {
+	// 				fmt.Fprintf(DebugWriter, "fatal: go_param_table: cyclic update loop: during update, idx %d was updated higher (previous) in the heirarchy, but idx %d had previous idx %d as a child, creating an infinite loop", prev, c, prev)
+	// 				panic("FATAL")
+	// 			}
+	// 		}
+	// 	}
+	// 	ll.AppendV(&t.prev_idxs, children...)
+	// }
+	t.update_queue.QueueMany(children...)
+}
+
+func (t *ParamTable) set_U8(idx ParamID, val uint8, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeU8, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetChanged(&t.vals_8, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_I8(idx ParamID, val int8, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeI8, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_8, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_Bool(idx ParamID, val bool, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeBool, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_8, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_U16(idx ParamID, val uint16, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeU16, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetChanged(&t.vals_16, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_I16(idx ParamID, val int16, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeI16, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_16, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_U32(idx ParamID, val uint32, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeU32, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetChanged(&t.vals_32, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_I32(idx ParamID, val int32, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeI32, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_32, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_F32(idx ParamID, val float32, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeF32, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_32, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_U64(idx ParamID, val uint64, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeU64, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetChanged(&t.vals_64, int(meta.valIdx), val)
+
+	if changed || meta.should_always_update() {
+
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_I64(idx ParamID, val int64, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeI64, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_64, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_F64(idx ParamID, val float64, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypeF64, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetUnsafeCastChanged(&t.vals_64, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) set_Ptr(idx ParamID, val unsafe.Pointer, mustBeInit cInit, cannotBeDerived cDerived, cannotBeRoot cRoot) {
+	meta := t.getMetaWithCheck(idx, TypePtr, mustBeInit, cannotBeDerived, cannotBeRoot)
+	changed := ll.SetChanged(&t.vals_ptr, int(meta.valIdx), val)
+	if changed || meta.should_always_update() {
+		t.queueChildren(meta)
+	}
+}
+
+func (t *ParamTable) SetRoot_U8(idx ParamID, val uint8) {
+	t.beginUpdate(idx)
+	t.set_U8(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_I8(idx ParamID, val int8) {
+	t.beginUpdate(idx)
+	t.set_I8(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_Bool(idx ParamID, val bool) {
+	t.beginUpdate(idx)
+	t.set_Bool(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_U16(idx ParamID, val uint16) {
+	t.beginUpdate(idx)
+	t.set_U16(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_I16(idx ParamID, val int16) {
+	t.beginUpdate(idx)
+	t.set_I16(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_U32(idx ParamID, val uint32) {
+	t.beginUpdate(idx)
+	t.set_U32(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_I32(idx ParamID, val int32) {
+	t.beginUpdate(idx)
+	t.set_I32(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_F32(idx ParamID, val float32) {
+	t.beginUpdate(idx)
+	t.set_F32(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_U64(idx ParamID, val uint64) {
+	t.beginUpdate(idx)
+	t.set_U64(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_I64(idx ParamID, val int64) {
+	t.beginUpdate(idx)
+	t.set_I64(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_F64(idx ParamID, val float64) {
+	t.beginUpdate(idx)
+	t.set_F64(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) SetRoot_Ptr(idx ParamID, val unsafe.Pointer) {
+	t.beginUpdate(idx)
+	t.set_Ptr(idx, val, _mustBeInit, _cannotBeDerived, _canBeRoot)
+	t.finishUpdate()
+}
+
+func (t *ParamTable) InitRoot_U8(val uint8, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValU8(val)
+	id = t.newMetadataRoot(valIdx, TypeU8, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_I8(val int8, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValI8(val)
+	id = t.newMetadataRoot(valIdx, TypeI8, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_Bool(val bool, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValBool(val)
+	id = t.newMetadataRoot(valIdx, TypeBool, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_U16(val uint16, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValU16(val)
+	id = t.newMetadataRoot(valIdx, TypeU16, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_I16(val int16, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValI16(val)
+	id = t.newMetadataRoot(valIdx, TypeI16, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_U32(val uint32, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValU32(val)
+	id = t.newMetadataRoot(valIdx, TypeU32, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_I32(val int32, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValI32(val)
+	id = t.newMetadataRoot(valIdx, TypeI32, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_F32(val float32, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValF32(val)
+
+	id = t.newMetadataRoot(valIdx, TypeF32, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_U64(val uint64, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValU64(val)
+	id = t.newMetadataRoot(valIdx, TypeU64, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_I64(val int64, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValI64(val)
+	id = t.newMetadataRoot(valIdx, TypeI64, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_F64(val float64, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValF64(val)
+	id = t.newMetadataRoot(valIdx, TypeF64, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) InitRoot_Ptr(val unsafe.Pointer, alwaysUpdate bool) (id ParamID) {
+	valIdx := t.newValPtr(val)
+	id = t.newMetadataRoot(valIdx, TypePtr, alwaysUpdate)
+	return
+}
+
+func (t *ParamTable) RegisterCalc(calc ParamCalc) (calcIdx CalcID) {
+	calcIdx = CalcID(ll.PushGetIdx(&t.calcs, calc))
+	return
+}
+
+type TypeInit struct {
+	Ptype        ParamType
+	AlwaysUpdate bool
+}
+
+func NewDerivedInit(ptype ParamType, alwaysUpate bool) TypeInit {
+	return TypeInit{
+		Ptype:        ptype,
+		AlwaysUpdate: alwaysUpate,
+	}
+}
+
+func (t *ParamTable) InitDerived_Linked(calcIdx CalcID, inputs []ParamID, outputTypes []TypeInit) (outputIDs ll.SliceAdapter[ParamID]) {
+	outputIDs = ll.EmptySliceAdapter[ParamID](len(outputTypes))
+	for i, out := range outputTypes {
+		switch out.Ptype {
+		case TypeU8, TypeI8, TypeBool:
+			valIdx := t.newValU8(0)
+			id := t.newMetadataDerivedLinkedUninitSiblings(valIdx, out.Ptype, out.AlwaysUpdate, calcIdx, inputs)
+			ll.Push(&outputIDs, id)
+		case TypeU16, TypeI16:
+			valIdx := t.newValU16(0)
+			id := t.newMetadataDerivedLinkedUninitSiblings(valIdx, out.Ptype, out.AlwaysUpdate, calcIdx, inputs)
+			ll.Push(&outputIDs, id)
+		case TypeU32, TypeI32, TypeF32:
+			valIdx := t.newValU32(0)
+			id := t.newMetadataDerivedLinkedUninitSiblings(valIdx, out.Ptype, out.AlwaysUpdate, calcIdx, inputs)
+			ll.Push(&outputIDs, id)
+		case TypeU64, TypeI64, TypeF64:
+			valIdx := t.newValU64(0)
+			id := t.newMetadataDerivedLinkedUninitSiblings(valIdx, out.Ptype, out.AlwaysUpdate, calcIdx, inputs)
+			ll.Push(&outputIDs, id)
+		case TypePtr:
+			valIdx := t.newValPtr(nil)
+			id := t.newMetadataDerivedLinkedUninitSiblings(valIdx, out.Ptype, out.AlwaysUpdate, calcIdx, inputs)
+			ll.Push(&outputIDs, id)
+		default:
+			if EnableSafetyChecks {
+				fmt.Fprintf(DebugWriter, "fatal: go_param_table: InitDerived_Linked(): output value at idx %d had invalid ParamType %d (largest valid ParamType is %d)", i, out.Ptype, typeCount-1)
+				panic("FATAL")
 			}
-		} else {
-			if idx < t.idxOffsets[validType] && idx >= t.idxOffsets[validType+1] {
-				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is not a %s value: %s values are in range [%d, %d)", idx, name, name, t.idxOffsets[validType], t.idxOffsets[validType+1])
-				panic(1)
-			}
-		}
-		if !canBeDerived {
-			if t.isDerived(idx) {
-				fmt.Fprintf(DebugWriter, "fatal: go_param_table: index %d is a derived value (has parents and calculation func), cannot update directly", idx)
-				panic(1)
-			}
 		}
 	}
-}
-
-func (t *ParamTable) getBytePtr(idx uint16, typeIdx int) (ptr *byte, subIdx uint16) {
-	subIdx = idx - t.idxOffsets[typeIdx]
-	memOffset := t.byteOffsets[typeIdx] + (uint32(subIdx) * sizeTable[typeIdx])
-	return &t.values[memOffset], subIdx
-}
-
-func (t *ParamTable) Get_U8(idx PIdx_U8) uint8 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint8", TypeU8, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeU8)
-	return *memPtr
-}
-
-func (t *ParamTable) Get_I8(idx PIdx_I8) int8 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int8", TypeI8, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeI8)
-	return *(*int8)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_Bool(idx PIdx_Bool) bool {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Bool", TypeBool, true, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeBool)
-	return *(*bool)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_U16(idx PIdx_U16) uint16 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint16", TypeU16, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeU16)
-	return *(*uint16)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_I16(idx PIdx_I16) int16 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int16", TypeI16, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeI16)
-	return *(*int16)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_U32(idx PIdx_U32) uint32 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint32", TypeU32, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeU32)
-	return *(*uint32)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_I32(idx PIdx_I32) int32 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int32", TypeI32, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeI32)
-	return *(*int32)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_F32(idx PIdx_F32) float32 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Float32", TypeF32, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeF32)
-	return *(*float32)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_U64(idx PIdx_U64) uint64 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Uint64", TypeU64, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeU64)
-	return *(*uint64)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_I64(idx PIdx_I64) int64 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Int64", TypeI64, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeI64)
-	return *(*int64)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_F64(idx PIdx_F64) float64 {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "Float64", TypeF64, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypeF64)
-	return *(*float64)(unsafe.Pointer(memPtr))
-}
-
-func (t *ParamTable) Get_Ptr(idx PIdx_Ptr) unsafe.Pointer {
-	_idx := uint16(idx)
-	t.checkIdxType(_idx, "unsafe.Pointer", TypePtr, false, true)
-	t.checkInit(_idx)
-	memPtr, _ := t.getBytePtr(_idx, TypePtr)
-	return unsafe.Pointer(memPtr)
-}
-
-func (t *ParamTable) set_U8(idx uint16, val uint8, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint8", TypeU8, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeU8)
-	oldVal := *memPtr
-	*memPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
+	for _, p := range inputs {
+		pmeta := t.meta_table.Get(int(p))
+		pmeta.appendChildren(outputIDs.GoSlice())
+		t.meta_table.Set(int(p), pmeta)
 	}
+	for i := range outputIDs.Len() {
+		id := int(outputIDs.Get(i))
+		meta := t.meta_table.Get(id)
+		meta.appendSiblings(outputIDs.GoSlice())
+		t.meta_table.Set(id, meta)
+	}
+	iface := CalcInterface{
+		table:   t,
+		inputs:  inputs,
+		outputs: outputIDs.GoSlice(),
+	}
+	calc := t.calcs.Get(int(calcIdx))
+	calc(&iface)
 	return
 }
 
-func (t *ParamTable) set_I8(idx uint16, val int8, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int8", TypeI8, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeI8)
-	valPtr := (*int8)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_U8(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU8(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeU8, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_Bool(idx uint16, val bool, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Bool", TypeBool, true, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeBool)
-	valPtr := (*bool)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_I8(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValI8(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeI8, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_U16(idx uint16, val uint16, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint16", TypeU16, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeU16)
-	valPtr := (*uint16)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_Bool(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValBool(false)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeBool, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_I16(idx uint16, val int16, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int16", TypeI16, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeI16)
-	valPtr := (*int16)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_U16(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU16(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeU16, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_U32(idx uint16, val uint32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint32", TypeU32, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeU32)
-	valPtr := (*uint32)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_I16(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValI16(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeI16, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_I32(idx uint16, val int32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int32", TypeI32, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeI32)
-	valPtr := (*int32)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_U32(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU32(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeU32, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_F32(idx uint16, val float32, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Float32", TypeF32, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeF32)
-	valPtr := (*float32)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_I32(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU32(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeI32, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_U64(idx uint16, val uint64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Uint64", TypeU64, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeU64)
-	valPtr := (*uint64)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_F32(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU32(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeF32, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_I64(idx uint16, val int64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Int64", TypeI64, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeI64)
-	valPtr := (*int64)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_U64(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU64(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeU64, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_F64(idx uint16, val float64, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "Float64", TypeF64, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypeF64)
-	valPtr := (*float64)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_I64(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU64(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeI64, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) set_Ptr(idx uint16, val unsafe.Pointer, canBeDerived bool, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	t.checkIdxType(idx, "unsafe.Pointer", TypePtr, false, canBeDerived)
-	f := getFlag(idx, t.flags)
-	memPtr, _ := t.getBytePtr(idx, TypePtr)
-	valPtr := (*unsafe.Pointer)(unsafe.Pointer(memPtr))
-	oldVal := *valPtr
-	*valPtr = val
-	newPrevIdxs = prevIdxs
-	if f.AlwaysUpdate() || oldVal != val {
-		newPrevIdxs = t.updateChildren(idx, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_F64(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValU64(0)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypeF64, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
-func (t *ParamTable) SetRoot_U8(idx PIdx_U8, val uint8) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.checkInit(_idx)
-	t.set_U8(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_I8(idx PIdx_I8, val int8) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.checkInit(_idx)
-	t.set_I8(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_Bool(idx PIdx_Bool, val bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.checkInit(_idx)
-	t.set_Bool(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_U16(idx PIdx_U16, val uint16) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.checkInit(_idx)
-	t.set_U16(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_I16(idx PIdx_I16, val int16) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.checkInit(_idx)
-	t.set_I16(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_U32(idx PIdx_U32, val uint32) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_U32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_I32(idx PIdx_I32, val int32) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_I32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_F32(idx PIdx_F32, val float32) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_F32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_U64(idx PIdx_U64, val uint64) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_U64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_I64(idx PIdx_I64, val int64) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_I64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_F64(idx PIdx_F64, val float64) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_F64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) SetRoot_Ptr(idx PIdx_Ptr, val unsafe.Pointer) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	t.set_Ptr(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_U8(idx PIdx_U8, val uint8, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_U8(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_I8(idx PIdx_I8, val int8, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_I8(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_Bool(idx PIdx_Bool, val bool, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_Bool(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_U16(idx PIdx_U16, val uint16, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_U16(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_I16(idx PIdx_I16, val int16, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_I16(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_U32(idx PIdx_U32, val uint32, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_U32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_I32(idx PIdx_I32, val int32, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_I32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_F32(idx PIdx_F32, val float32, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_F32(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_U64(idx PIdx_U64, val uint64, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_U64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_I64(idx PIdx_I64, val int64, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_I64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_F64(idx PIdx_F64, val float64, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_F64(_idx, val, false, prev)
-}
-
-func (t *ParamTable) InitRoot_Ptr(idx PIdx_F64, val unsafe.Pointer, alwaysUpdate bool) {
-	_idx := uint16(idx)
-	prev := []uint16{_idx}
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(_idx, t.flags, f)
-	t.set_Ptr(_idx, val, false, prev)
-}
-
-func (t *ParamTable) initHookup(idx uint16, calcIdx PIdx_Calc, parents []uint16, outputs []uint16) {
-	hookStart := uint32(len(t.hookupData))
-	if EnableDebug {
-		if len(parents) > 255 {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: derived values can only have a maximum of 255 parents (calculation inputs), got parent len %d", len(parents))
-			panic(1)
-		}
-		if len(outputs) > 255 {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: derived values can only have a maximum of 255 calculation outputs, got output len %d", len(outputs))
-			panic(1)
-		}
-	}
-	inLen := uint32(len(parents))
-	outLen := uint32(len(outputs))
-	hookLen := _HOOK_OFF_INSTART + inLen + outLen
-	paramsLen := newParamsLen(inLen, outLen)
-	t.hookupData = slices.Grow(t.hookupData, int(hookLen))
-	t.hookupData = append(t.hookupData, uint16(calcIdx), uint16(paramsLen), 0)
-	t.hookupData = append(t.hookupData, parents...)
-	t.hookupData = append(t.hookupData, outputs...)
-	t.hookups[idx] = hookup(hookStart)
-}
-
-func (t *ParamTable) initRootHookupWithChild(rootIdx uint16, childIdx uint16) {
-	hookStart := uint32(len(t.hookupData))
-	hookLen := _HOOK_OFF_INSTART + 1
-	t.hookupData = slices.Grow(t.hookupData, int(hookLen))
-	t.hookupData = append(t.hookupData, 0, 0, 1, childIdx)
-	t.hookups[rootIdx] = hookup(hookStart)
-}
-
-func (t *ParamTable) initDerivedHookups(idx uint16, alwaysUpdate bool, calcIdx PIdx_Calc, parents []uint16, outputs []uint16) {
-	f := _PFLAG_INIT
-	if alwaysUpdate {
-		f |= _PFLAG_ALWAYS_UPDATE
-	}
-	setFlag(idx, t.flags, f)
-	t.initHookup(idx, calcIdx, parents, outputs)
-	for _, parent := range parents {
-		t.addChild(parent, idx)
-	}
-	prevIdxs := t.trigger(idx, []uint16{idx})
-	t.updateChildren(idx, prevIdxs)
-}
-
-func (t *ParamTable) getCalc(calcIdx PIdx_Calc) ParamCalc {
-	if EnableDebug {
-		if t.calcs[calcIdx] == nil {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d has not been registered", calcIdx)
-			panic(1)
-		}
-	}
-	return t.calcs[calcIdx]
-}
-
-func (t *ParamTable) RegisterCalc(calcIdx PIdx_Calc, calc ParamCalc) {
-	if EnableDebug {
-		if calcIdx > PIdx_Calc(len(t.calcs)) {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d is outside bounds of calc list (len %d)", calcIdx, uint16(len(t.calcs)))
-			panic(1)
-		}
-		if t.calcs[calcIdx] != nil {
-			fmt.Fprintf(DebugWriter, "fatal: go_param_table: calc index %d is already registered", calcIdx)
-			panic(1)
-		}
-	}
-	t.calcs[calcIdx] = calc
-}
-
-func (t *ParamTable) InitDerived_U8(idx PIdx_U8, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint8", TypeU8, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_I8(idx PIdx_I8, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int8", TypeI8, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_Bool(idx PIdx_Bool, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Bool", TypeBool, true, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_U16(idx PIdx_U16, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint16", TypeU16, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_I16(idx PIdx_I16, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int16", TypeI16, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_U32(idx PIdx_U32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint32", TypeU32, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_I32(idx PIdx_I32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int32", TypeI32, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_F32(idx PIdx_F32, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Float32", TypeF32, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_U64(idx PIdx_U64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uint64", TypeU64, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_I64(idx PIdx_I64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Int64", TypeI64, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_F64(idx PIdx_F64, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Float64", TypeF64, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) InitDerived_Addr(idx PIdx_Ptr, alwaysUpdate bool, calcIdx PIdx_Calc, inputs []uint16, outputs []uint16) {
-	t.checkIdxType(uint16(idx), "Uintptr", TypePtr, false, true)
-	t.initDerivedHookups(uint16(idx), alwaysUpdate, calcIdx, inputs, outputs)
-}
-
-func (t *ParamTable) updateChildren(idx uint16, prevIdxs []uint16) (newPrevIdxs []uint16) {
-	newPrevIdxs = prevIdxs
-	children := t.getChildren(idx)
-	if len(children) == 0 {
-		return
-	}
-	for _, child := range children {
-		if EnableDebug {
-			for _, prevIdx := range prevIdxs {
-				if child == prevIdx {
-					fmt.Fprintf(DebugWriter, "fatal: go_param_table: cyclic update loop: during update, idx %d was updated higher (previous) in the heirarchy, but idx %d had previous idx %d as a child, creating an infinite loop", prevIdx, idx, prevIdx)
-					panic(1)
-				}
-			}
-			newPrevIdxs = append(newPrevIdxs, child)
-		}
-		newPrevIdxs = t.trigger(child, newPrevIdxs)
-	}
-	return
+func (t *ParamTable) InitDerived_Ptr(alwaysUpdate bool, calcIdx CalcID, inputs ...ParamID) (id ParamID) {
+	valIdx := t.newValPtr(nil)
+	meta, id := t.newMetadataDerivedSingle(valIdx, TypePtr, alwaysUpdate, calcIdx, inputs)
+	t.doUpdate(meta)
+	return id
 }
 
 type CalcInterface struct {
-	table    *ParamTable
-	inputs   []uint16
-	outputs  []uint16
-	prevIdxs []uint16
+	table   *ParamTable
+	inputs  []ParamID
+	outputs []ParamID
 }
 
 func (t CalcInterface) GetInput_U8(inputIdx uint16) uint8 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_U8(PIdx_U8(idx))
+	return t.table.Get_U8(idx)
 }
 func (t CalcInterface) GetInput_I8(inputIdx uint16) int8 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_I8(PIdx_I8(idx))
+	return t.table.Get_I8(idx)
 }
 func (t CalcInterface) GetInput_Bool(inputIdx uint16) bool {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_Bool(PIdx_Bool(idx))
+	return t.table.Get_Bool(idx)
 }
 func (t CalcInterface) GetInput_U16(inputIdx uint16) uint16 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_U16(PIdx_U16(idx))
+	return t.table.Get_U16(idx)
 }
 func (t CalcInterface) GetInput_I16(inputIdx uint16) int16 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_I16(PIdx_I16(idx))
+	return t.table.Get_I16(idx)
 }
 func (t CalcInterface) GetInput_U32(inputIdx uint16) uint32 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_U32(PIdx_U32(idx))
+	return t.table.Get_U32(idx)
 }
 func (t CalcInterface) GetInput_I32(inputIdx uint16) int32 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_I32(PIdx_I32(idx))
+	return t.table.Get_I32(idx)
 }
 func (t CalcInterface) GetInput_F32(inputIdx uint16) float32 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_F32(PIdx_F32(idx))
+	return t.table.Get_F32(idx)
 }
 func (t CalcInterface) GetInput_U64(inputIdx uint16) uint64 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_U64(PIdx_U64(idx))
+	return t.table.Get_U64(idx)
 }
 func (t CalcInterface) GetInput_I64(inputIdx uint16) int64 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_I64(PIdx_I64(idx))
+	return t.table.Get_I64(idx)
 }
 func (t CalcInterface) GetInput_F64(inputIdx uint16) float64 {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_F64(PIdx_F64(idx))
+	return t.table.Get_F64(idx)
 }
 func (t CalcInterface) GetInput_Ptr(inputIdx uint16) unsafe.Pointer {
 	idx := t.inputs[inputIdx]
-	return t.table.Get_Ptr(PIdx_Ptr(idx))
+	return t.table.Get_Ptr(idx)
 }
-func (t CalcInterface) GetAllInputs() []uint16 {
+func (t CalcInterface) GetAllInputs() []ParamID {
 	return t.inputs
 }
-func (t CalcInterface) GetInputRangeStart(start uint16) []uint16 {
+func (t CalcInterface) GetInputRangeStart(start uint16) []ParamID {
 	return t.inputs[start:]
 }
-func (t CalcInterface) GetInputRangeEnd(end uint16) []uint16 {
+func (t CalcInterface) GetInputRangeEnd(end uint16) []ParamID {
 	return t.inputs[:end]
 }
-func (t CalcInterface) GetInputRangeStartEnd(start, end uint16) []uint16 {
+func (t CalcInterface) GetInputRangeStartEnd(start, end uint16) []ParamID {
 	return t.inputs[start:end]
 }
 
 func (t *CalcInterface) SetOutput_U8(outputIdx uint16, val uint8) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_U8(idx, val, true, t.prevIdxs)
+	t.table.set_U8(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_I8(outputIdx uint16, val int8) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_I8(idx, val, true, t.prevIdxs)
+	t.table.set_I8(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_Bool(outputIdx uint16, val bool) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_Bool(idx, val, true, t.prevIdxs)
+	t.table.set_Bool(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_U16(outputIdx uint16, val uint16) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_U16(idx, val, true, t.prevIdxs)
+	t.table.set_U16(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_I16(outputIdx uint16, val int16) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_I16(idx, val, true, t.prevIdxs)
+	t.table.set_I16(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_U32(outputIdx uint16, val uint32) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_U32(idx, val, true, t.prevIdxs)
+	t.table.set_U32(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_I32(outputIdx uint16, val int32) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_I32(idx, val, true, t.prevIdxs)
+	t.table.set_I32(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_F32(outputIdx uint16, val float32) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_F32(idx, val, true, t.prevIdxs)
+	t.table.set_F32(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_U64(outputIdx uint16, val uint64) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_U64(idx, val, true, t.prevIdxs)
+	t.table.set_U64(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_I64(outputIdx uint16, val int64) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_I64(idx, val, true, t.prevIdxs)
+	t.table.set_I64(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_F64(outputIdx uint16, val float64) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_F64(idx, val, true, t.prevIdxs)
+	t.table.set_F64(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }
 func (t *CalcInterface) SetOutput_Ptr(outputIdx uint16, val unsafe.Pointer) {
 	idx := t.outputs[outputIdx]
-	t.prevIdxs = t.table.set_Ptr(idx, val, true, t.prevIdxs)
+	t.table.set_Ptr(idx, val, _mustBeInit, _canBeDerived, _cannotBeRoot)
 }

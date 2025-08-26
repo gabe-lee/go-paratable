@@ -5,112 +5,76 @@ import (
 )
 
 func TestREADME_Ex1(t *testing.T) {
-	EnableDebug = true
-	const (
-		// 'root' values
-		Px PIdx_F32 = PIdx_F32(iota)
-		Py
-		Pw
-		Ph
-		// 'derived' values
-		Bx
-		By
-		Bw
-		Bh
-		// important, used for table initialization, can have any name
-		_F32_PARAMS_END
-	)
+	EnableSafetyChecks = true
 
-	const (
-		CalcVal_Plus_32_0 = PIdx_Calc(iota)
-		CalcVal_Mult_0_50_Sub_64_0
-		// important, used for table initialization, can have any name
-		_CALC_COUNT
-	)
+	var MyParamTable = NewParamTable(8)
 
-	const _end uint16 = uint16(_F32_PARAMS_END)
+	var CALC_A_PLUS_B = MyParamTable.RegisterCalc(func(c *CalcInterface) {
+		a := c.GetInput_F32(0) // get the first function parameter as a float32
+		b := c.GetInput_F32(1) // get the second function parameter as a float32
+		out := a + b
+		c.SetOutput_F32(0, out) // set the first function output
+	})
 
-	var MyParamTable = func() ParamTable {
-		// This is the default library setting, used for identifying table issues during development
-		EnableDebug = true
-		// each parameter denotes the END index for the data type, see the full template for details
-		table := NewParamTable(
-			PIdx_U64(0),
-			PIdx_I64(0),
-			PIdx_F64(0),
-			PIdx_Ptr(0),
-			PIdx_U32(0),
-			PIdx_I32(0),
-			_F32_PARAMS_END,
-			PIdx_U16(_end),
-			PIdx_I16(_end),
-			PIdx_U8(_end),
-			PIdx_I8(_end),
-			PIdx_Bool(_end),
-			_CALC_COUNT)
-		// First, register your calculation/update functions
-		table.RegisterCalc(CalcVal_Plus_32_0, func(c *CalcInterface) {
-			inVal := c.GetInput_F32(0) // get the first function parameter as a float32
-			outVal := inVal + 32.0
-			c.SetOutput_F32(0, outVal) // set the first function output to outVal
-		})
-		table.RegisterCalc(CalcVal_Mult_0_50_Sub_64_0, func(c *CalcInterface) {
-			inVal := c.GetInput_F32(0) // get the first function parameter as a float32
-			outVal := (inVal * 0.5) - 64.0
-			c.SetOutput_F32(0, outVal) // set the first function output to outVal
-		})
-		// Root values are initialized next
-		table.InitRoot_F32(Px, 100.0, false)
-		table.InitRoot_F32(Py, 200.0, false)
-		table.InitRoot_F32(Pw, 800.0, false)
-		table.InitRoot_F32(Ph, 600.0, false)
-		// Derived values are initialized last
-		//   - (These function calls can be cumbersome, it is recomended to use the pattern(s)
-		//      shown in the template sample instead)
-		table.InitDerived_F32(Bx, false, CalcVal_Plus_32_0, []uint16{uint16(Px)}, []uint16{uint16(Bx)})
-		table.InitDerived_F32(By, false, CalcVal_Plus_32_0, []uint16{uint16(Py)}, []uint16{uint16(By)})
-		table.InitDerived_F32(Bw, false, CalcVal_Mult_0_50_Sub_64_0, []uint16{uint16(Pw)}, []uint16{uint16(Bw)})
-		table.InitDerived_F32(Bh, false, CalcVal_Mult_0_50_Sub_64_0, []uint16{uint16(Ph)}, []uint16{uint16(Bh)})
-		return table
-	}()
+	var CALC_HALF_A_MINUS_2B = MyParamTable.RegisterCalc(func(c *CalcInterface) {
+		a := c.GetInput_F32(0) // get the first function parameter as a float32
+		b := c.GetInput_F32(1) // get the second function parameter as a float32
+		out := (a * 0.5) - (b * 2.0)
+		c.SetOutput_F32(0, out) // set the first function output
+	})
 
-	// 	var print = func(table *ParamTable) {
-	// 		fmt.Printf(`
+	var Px = MyParamTable.InitRoot_F32(100.0, false)
+	var Py = MyParamTable.InitRoot_F32(200.0, false)
+	var Pw = MyParamTable.InitRoot_F32(800.0, false)
+	var Ph = MyParamTable.InitRoot_F32(600.0, false)
+
+	var Margin = MyParamTable.InitRoot_F32(32.0, false)
+
+	// Derived variables must be declared AFTER the calculations they use
+	// and the root/derived values they are children of
+	var Bx = MyParamTable.InitDerived_F32(false, CALC_A_PLUS_B, Px, Margin)
+	var By = MyParamTable.InitDerived_F32(false, CALC_A_PLUS_B, Py, Margin)
+	var Bw = MyParamTable.InitDerived_F32(false, CALC_HALF_A_MINUS_2B, Pw, Margin)
+	var Bh = MyParamTable.InitDerived_F32(false, CALC_HALF_A_MINUS_2B, Ph, Margin)
+
+	// var print = func(table *ParamTable) {
+	// 	fmt.Printf(`
 	//    X     Y     W     H
 	// P: %.1f %.1f %.1f %.1f
 	// B: %.1f %.1f %.1f %.1f`,
-	// 			table.Get_F32(Px), table.Get_F32(Py), table.Get_F32(Pw), table.Get_F32(Ph),
-	// 			table.Get_F32(Bx), table.Get_F32(By), table.Get_F32(Bw), table.Get_F32(Bh),
-	// 		)
-	// 	}
+	// 		table.Get_F32(Px), table.Get_F32(Py), table.Get_F32(Pw), table.Get_F32(Ph),
+	// 		table.Get_F32(Bx), table.Get_F32(By), table.Get_F32(Bw), table.Get_F32(Bh),
+	// 	)
+	// }
 
 	// print(&MyParamTable)
 
-	if MyParamTable.Get_F32(Bx) != 132.0 {
-		t.Errorf("example failed: Bx: %f != 132.0", MyParamTable.Get_F32(Bx))
+	if v := MyParamTable.Get_F32(Bx); v != 132.0 {
+		t.Fatalf("example failed: Bx: %f != 132.0", v)
 	}
-	if MyParamTable.Get_F32(By) != 232.0 {
-		t.Errorf("example failed: By: %f != 232.0", MyParamTable.Get_F32(By))
+	if v := MyParamTable.Get_F32(By); v != 232.0 {
+		t.Fatalf("example failed: By: %f != 232.0", v)
 	}
-	if MyParamTable.Get_F32(Bw) != 336.0 {
-		t.Errorf("example failed: Bw: %f != 336.0", MyParamTable.Get_F32(Bw))
+	if v := MyParamTable.Get_F32(Bw); v != 336.0 {
+		t.Fatalf("example failed: Bw: %f != 336.0", v)
 	}
-	if MyParamTable.Get_F32(Bh) != 236.0 {
-		t.Errorf("example failed: Bw: %f != 336.0", MyParamTable.Get_F32(Bh))
+	if v := MyParamTable.Get_F32(Bh); v != 236.0 {
+		t.Fatalf("example failed: Bh: %f != 236.0", v)
 	}
 	MyParamTable.SetRoot_F32(Pw, 990.0)
 	MyParamTable.SetRoot_F32(Py, 333.0)
-	if MyParamTable.Get_F32(Bx) != 132.0 {
-		t.Errorf("example failed: Bx: %f != 132.0", MyParamTable.Get_F32(Bx))
+	MyParamTable.SetRoot_F32(Margin, 48.0)
+	if MyParamTable.Get_F32(Bx) != 148.0 {
+		t.Fatalf("example failed: Bx: %f != 148.0", MyParamTable.Get_F32(Bx))
 	}
-	if MyParamTable.Get_F32(By) != 365.0 {
-		t.Errorf("example failed: By: %f != 365.0", MyParamTable.Get_F32(By))
+	if MyParamTable.Get_F32(By) != 381.0 {
+		t.Fatalf("example failed: By: %f != 381.0", MyParamTable.Get_F32(By))
 	}
-	if MyParamTable.Get_F32(Bw) != 431.0 {
-		t.Errorf("example failed: Bw: %f != 431.0", MyParamTable.Get_F32(Bw))
+	if MyParamTable.Get_F32(Bw) != 399.0 {
+		t.Fatalf("example failed: Bw: %f != 399.0", MyParamTable.Get_F32(Bw))
 	}
-	if MyParamTable.Get_F32(Bh) != 236.0 {
-		t.Errorf("example failed: Bw: %f != 336.0", MyParamTable.Get_F32(Bh))
+	if MyParamTable.Get_F32(Bh) != 204.0 {
+		t.Fatalf("example failed: Bh: %f != 204.0", MyParamTable.Get_F32(Bh))
 	}
 	// print(&MyParamTable)
 	t.Logf("TestTable MEM: %d", MyParamTable.TotalMemoryFootprint())
